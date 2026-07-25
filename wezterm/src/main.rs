@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context};
+use base64::Engine;
 use clap::builder::ValueParser;
 use clap::{Parser, ValueEnum, ValueHint};
 use clap_complete::{generate as generate_completion, shells, Generator as CompletionGenerator};
@@ -23,7 +24,7 @@ mod cli;
 
 #[derive(Debug, Parser)]
 #[command(
-    about = "Wez's Terminal Emulator\nhttp://github.com/wezterm/wezterm",
+    about = "Terminal Harbor — a workspace-first terminal for AI-assisted development",
     version = wezterm_version()
 )]
 pub struct Opt {
@@ -129,6 +130,12 @@ enum SubCommand {
     )]
     SetCwd(SetCwdCommand),
 
+    #[command(
+        name = "workspace",
+        about = "Update Terminal Harbor workspace metadata"
+    )]
+    Workspace(WorkspaceCommand),
+
     #[command(name = "record", about = "Record a terminal session as an asciicast")]
     Record(asciicast::RecordCommand),
 
@@ -142,6 +149,90 @@ enum SubCommand {
         #[arg(long, value_parser)]
         shell: Shell,
     },
+}
+
+#[derive(Debug, Parser, Clone)]
+struct WorkspaceCommand {
+    #[command(subcommand)]
+    command: WorkspaceSubCommand,
+}
+
+#[derive(Debug, Parser, Clone)]
+enum WorkspaceSubCommand {
+    #[command(
+        name = "status",
+        about = "Publish AI agent status for the current pane"
+    )]
+    Status(WorkspaceStatusCommand),
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum WorkspaceAgentState {
+    Idle,
+    Running,
+    Waiting,
+    Done,
+    Error,
+}
+
+#[derive(Debug, Parser, Clone)]
+struct WorkspaceStatusCommand {
+    /// Agent state. Omit with --clear to remove published status.
+    #[arg(long, value_enum, required_unless_present = "clear")]
+    state: Option<WorkspaceAgentState>,
+
+    /// Agent or tool name shown in the workspace sidebar.
+    #[arg(long)]
+    agent: Option<String>,
+
+    /// Short progress summary shown in the workspace sidebar.
+    #[arg(long)]
+    message: Option<String>,
+
+    /// Clear previously published state, agent name, and message.
+    #[arg(long, conflicts_with_all = ["state", "agent", "message"])]
+    clear: bool,
+}
+
+impl WorkspaceCommand {
+    fn run(&self) -> anyhow::Result<()> {
+        match &self.command {
+            WorkspaceSubCommand::Status(command) => command.run(),
+        }
+    }
+}
+
+impl WorkspaceStatusCommand {
+    fn run(&self) -> anyhow::Result<()> {
+        fn publish(name: &str, value: &str) {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
+            print!("\u{1b}]1337;SetUserVar={name}={encoded}\u{7}");
+        }
+
+        if self.clear {
+            publish("TH_AGENT_STATE", "");
+            publish("TH_AGENT_NAME", "");
+            publish("TH_AGENT_MESSAGE", "");
+        } else {
+            let state = match self.state.as_ref().expect("clap requires --state") {
+                WorkspaceAgentState::Idle => "idle",
+                WorkspaceAgentState::Running => "running",
+                WorkspaceAgentState::Waiting => "waiting",
+                WorkspaceAgentState::Done => "done",
+                WorkspaceAgentState::Error => "error",
+            };
+            publish("TH_AGENT_STATE", state);
+            if let Some(agent) = &self.agent {
+                publish("TH_AGENT_NAME", agent);
+            }
+            if let Some(message) = &self.message {
+                publish("TH_AGENT_MESSAGE", message);
+            }
+        }
+        use std::io::Write;
+        std::io::stdout().flush()?;
+        Ok(())
+    }
 }
 
 use termwiz::escape::osc::{
@@ -752,6 +843,7 @@ fn run() -> anyhow::Result<()> {
         | SubCommand::Connect(_) => delegate_to_gui(saver),
         SubCommand::ImageCat(cmd) => cmd.run(),
         SubCommand::SetCwd(cmd) => cmd.run(),
+        SubCommand::Workspace(cmd) => cmd.run(),
         SubCommand::Cli(cli) => cli::run_cli(&opts, cli),
         SubCommand::Record(cmd) => cmd.run(init_config(&opts)?),
         SubCommand::Replay(cmd) => cmd.run(),

@@ -125,6 +125,7 @@ impl super::TermWindow {
             log::error!("recreate_texture_atlas: {:#}", err);
         }
         self.invalidate_fancy_tab_bar();
+        self.invalidate_harbor_sidebar();
         self.invalidate_modal();
     }
 
@@ -195,7 +196,8 @@ impl super::TermWindow {
                 pixel_max: size.pixel_height as f32,
                 pixel_cell: self.render_metrics.cell_size.height as f32,
             };
-            let padding_left = config.window_padding.left.evaluate_as_pixels(h_context) as usize;
+            let padding_left = config.window_padding.left.evaluate_as_pixels(h_context) as usize
+                + self.harbor_sidebar_width();
             let padding_top = config.window_padding.top.evaluate_as_pixels(v_context) as usize;
             let padding_bottom =
                 config.window_padding.bottom.evaluate_as_pixels(v_context) as usize;
@@ -241,7 +243,8 @@ impl super::TermWindow {
                 pixel_max: self.terminal_size.pixel_height as f32,
                 pixel_cell: self.render_metrics.cell_size.height as f32,
             };
-            let padding_left = config.window_padding.left.evaluate_as_pixels(h_context) as usize;
+            let padding_left = config.window_padding.left.evaluate_as_pixels(h_context) as usize
+                + self.harbor_sidebar_width();
             let padding_top = config.window_padding.top.evaluate_as_pixels(v_context) as usize;
             let padding_bottom =
                 config.window_padding.bottom.evaluate_as_pixels(v_context) as usize;
@@ -300,6 +303,7 @@ impl super::TermWindow {
         };
         self.resize_overlays();
         self.invalidate_fancy_tab_bar();
+        self.invalidate_harbor_sidebar();
         self.update_title();
 
         window.set_resize_increments(if self.config.use_resize_increments {
@@ -512,6 +516,7 @@ impl super::TermWindow {
         let dimensions = Dimensions {
             pixel_width: ((terminal_size.cols as usize * render_metrics.cell_size.width as usize)
                 + padding_left
+                + self.harbor_sidebar_width()
                 + effective_right_padding(&config, h_context)),
             pixel_height: ((terminal_size.rows as usize * render_metrics.cell_size.height as usize)
                 + padding_top

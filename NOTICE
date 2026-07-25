@@ -1,0 +1,12 @@
+Terminal Harbor
+Copyright (c) 2026 Terminal Harbor contributors
+
+This project is derived from WezTerm, Copyright (c) 2018-Present Wez Furlong,
+and is distributed under the MIT License in LICENSE.md.
+
+Terminal Harbor's workspace sidebar and agent-status integration are original
+implementations developed against WezTerm's public interfaces. cmux was used
+only as product-level inspiration. No cmux source code, assets, or copied
+implementation details are included in this repository.
+
+The names WezTerm and cmux and their respective marks belong to their owners.

@@ -39,6 +39,7 @@ impl super::TermWindow {
             UIItemType::TabBar(_) => {
                 self.update_title_post_status();
             }
+            UIItemType::HarborWorkspace(_) | UIItemType::HarborAddWorkspace => {}
             UIItemType::CloseTab(_)
             | UIItemType::AboveScrollThumb
             | UIItemType::BelowScrollThumb
@@ -50,6 +51,7 @@ impl super::TermWindow {
     fn enter_ui_item(&mut self, item: &UIItem) {
         match item.item_type {
             UIItemType::TabBar(_) => {}
+            UIItemType::HarborWorkspace(_) | UIItemType::HarborAddWorkspace => {}
             UIItemType::CloseTab(_)
             | UIItemType::AboveScrollThumb
             | UIItemType::BelowScrollThumb
@@ -366,6 +368,26 @@ impl super::TermWindow {
         match item.item_type {
             UIItemType::TabBar(item) => {
                 self.mouse_event_tab_bar(item, event, context);
+            }
+            UIItemType::HarborWorkspace(workspace) => {
+                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
+                    if let Some(workspace) =
+                        crate::harbor_workspace::workspace_with_mux_name(&workspace)
+                    {
+                        if let Err(err) = self.harbor_activate_workspace(workspace) {
+                            log::error!("activating Terminal Harbor workspace: {err:#}");
+                        }
+                    }
+                }
+                context.set_cursor(Some(MouseCursor::Arrow));
+            }
+            UIItemType::HarborAddWorkspace => {
+                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
+                    if let Err(err) = self.harbor_create_workspace() {
+                        log::error!("creating Terminal Harbor workspace: {err:#}");
+                    }
+                }
+                context.set_cursor(Some(MouseCursor::Arrow));
             }
             UIItemType::AboveScrollThumb => {
                 self.mouse_event_above_scroll_thumb(item, pane, event, context);

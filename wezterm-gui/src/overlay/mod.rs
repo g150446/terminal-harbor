@@ -16,7 +16,8 @@ pub mod quickselect;
 pub mod selector;
 
 pub use confirm_close_pane::{
-    confirm_close_pane, confirm_close_tab, confirm_close_window, confirm_quit_program,
+    confirm_close_pane, confirm_close_tab, confirm_close_window, confirm_close_workspace,
+    confirm_quit_program,
 };
 pub use copy::{CopyModeParams, CopyOverlay};
 pub use debug::show_debug_overlay;

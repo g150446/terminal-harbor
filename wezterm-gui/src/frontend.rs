@@ -312,8 +312,12 @@ impl GuiFrontEnd {
                     KeyAssignment::SpawnCommandInNewWindow(spawn) => {
                         spawn_command(&spawn, SpawnWhere::NewWindow);
                     }
-                    _ => {
-                        log::warn!("unhandled perform: {action:?}");
+                    action => {
+                        if let Some(window) = front_end().window_for_active_workspace() {
+                            window.notify(WindowEvent::PerformKeyAssignment(action));
+                        } else {
+                            log::warn!("unhandled perform with no windows: {action:?}");
+                        }
                     }
                 }
             }
@@ -450,6 +454,22 @@ impl GuiFrontEnd {
         mux.set_active_workspace_for_client(&self.client_id, workspace);
         *self.switching_workspaces.borrow_mut() = false;
         self.reconcile_workspace();
+    }
+
+    pub fn active_workspace(&self) -> String {
+        Mux::get().active_workspace_for_client(&self.client_id)
+    }
+
+    fn window_for_active_workspace(&self) -> Option<Window> {
+        let mux = Mux::get();
+        let active_workspace = self.active_workspace();
+        self.known_windows
+            .borrow()
+            .iter()
+            .find_map(|(window, mux_window_id)| {
+                let mux_window = mux.get_window(*mux_window_id)?;
+                (mux_window.get_workspace() == active_workspace).then(|| window.clone())
+            })
     }
 
     pub fn record_known_window(&self, window: Window, mux_window_id: MuxWindowId) {

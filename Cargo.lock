@@ -6788,6 +6788,7 @@ name = "wezterm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "cc",
  "chrono",
  "clap",
@@ -7088,6 +7089,7 @@ dependencies = [
  "unicode-segmentation",
  "url",
  "url-funcs",
+ "uuid",
  "walkdir",
  "wezterm-bidi",
  "wezterm-blob-leases",

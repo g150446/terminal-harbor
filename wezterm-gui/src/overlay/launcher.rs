@@ -58,6 +58,7 @@ pub struct LauncherArgs {
     title: String,
     active_workspace: String,
     workspaces: Vec<String>,
+    harbor_workspaces: Vec<crate::harbor_workspace::HarborWorkspace>,
     help_text: String,
     fuzzy_help_text: String,
     alphabet: String,
@@ -74,6 +75,7 @@ impl LauncherArgs {
         help_text: &str,
         fuzzy_help_text: &str,
         alphabet: &str,
+        show_harbor_workspaces: bool,
     ) -> Self {
         let mux = Mux::get();
 
@@ -81,6 +83,11 @@ impl LauncherArgs {
 
         let workspaces = if flags.contains(LauncherFlags::WORKSPACES) {
             mux.iter_workspaces()
+        } else {
+            vec![]
+        };
+        let harbor_workspaces = if show_harbor_workspaces {
+            crate::harbor_workspace::workspaces()
         } else {
             vec![]
         };
@@ -161,6 +168,7 @@ impl LauncherArgs {
             domain_id_of_current_tab,
             title: title.to_string(),
             workspaces,
+            harbor_workspaces,
             active_workspace,
             help_text: help_text.to_string(),
             fuzzy_help_text: fuzzy_help_text.to_string(),
@@ -291,6 +299,18 @@ impl LauncherState {
                     name: None,
                     spawn: None,
                 },
+            });
+        }
+
+        for (index, workspace) in args.harbor_workspaces.iter().enumerate() {
+            let path = workspace
+                .root
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "Path unavailable".to_string());
+            self.entries.push(Entry {
+                label: format!("{} — {}", workspace.name, path),
+                action: KeyAssignment::ActivateWorkspace(index),
             });
         }
 

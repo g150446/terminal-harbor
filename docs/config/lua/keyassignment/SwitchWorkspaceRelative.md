@@ -2,8 +2,8 @@
 
 {{since('20220319-142410-0fcdea07')}}
 
-Switch to the workspace relative to the current workspace.  Workspaces are ordered
-lexicographically based on their names.
+Switch to the workspace relative to the current workspace. Terminal Harbor
+uses the persisted sidebar order and wraps at the first and last workspace.
 
 The argument value specifies an offset. eg: `-1` switches to the workspace
 immediately prior to the current workspace, while `1` switches to the workspace
@@ -31,4 +31,3 @@ config.keys = {
   { key = 'p', mods = 'CTRL', action = act.SwitchWorkspaceRelative(-1) },
 }
 ```
-

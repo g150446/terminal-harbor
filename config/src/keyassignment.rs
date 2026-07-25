@@ -597,6 +597,10 @@ pub enum KeyAssignment {
     ActivatePaneDirection(PaneDirection),
     ActivatePaneByIndex(usize),
     TogglePaneZoomState,
+    CreateWorkspace,
+    ShowWorkspaceSwitcher,
+    ActivateWorkspace(usize),
+    ToggleWorkspaceSidebar,
     SetPaneZoomState(bool),
     CloseCurrentPane {
         confirm: bool,

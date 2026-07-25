@@ -391,7 +391,10 @@ impl crate::TermWindow {
             VerticalWindowContentAlignment::Bottom => vertical_gap,
         };
 
-        (padding_left + left_gap, padding_top + top_gap)
+        (
+            padding_left + left_gap + self.harbor_sidebar_width() as f32,
+            padding_top + top_gap,
+        )
     }
 
     fn resolve_lock_glyph(

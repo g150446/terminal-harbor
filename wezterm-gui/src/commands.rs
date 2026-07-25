@@ -420,7 +420,8 @@ impl CommandDef {
         commands.retain(|cmd| !cmd.menubar.is_empty());
 
         // Prefer to put the menus in this order
-        let mut order: Vec<&'static str> = vec!["WezTerm", "Shell", "Edit", "View", "Window"];
+        let mut order: Vec<&'static str> =
+            vec!["Terminal Harbor", "Shell", "Edit", "View", "Window"];
         // Add any other menus on the end
         for cmd in &commands {
             if !order.contains(&cmd.menubar[0]) {
@@ -440,11 +441,11 @@ impl CommandDef {
                         // macOS will insert stuff at the top and bottom, so we add
                         // a separator to tidy things up a bit
                         menu.add_item(&MenuItem::new_separator());
-                    } else if cmd.menubar[0] == "WezTerm" {
+                    } else if cmd.menubar[0] == "Terminal Harbor" {
                         menu.assign_as_app_menu();
 
                         let about_item = MenuItem::new_with(
-                            &format!("WezTerm {}", config::wezterm_version()),
+                            &format!("Terminal Harbor {}", config::wezterm_version()),
                             Some(wezterm_perform_key_assignment_sel),
                             "",
                         );
@@ -745,13 +746,13 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
                 .into(),
             keys: vec![(Modifiers::SUPER, "h".into())],
             args: &[],
-            menubar: &["WezTerm"],
+            menubar: &["Terminal Harbor"],
             icon: None,
         },
         SpawnWindow => CommandDef {
             brief: "New Window".into(),
             doc: "Launches the default program into a new window".into(),
-            keys: vec![(Modifiers::SUPER, "n".into())],
+            keys: vec![(Modifiers::SUPER | Modifiers::SHIFT, "n".into())],
             args: &[],
             menubar: &["Shell"],
             icon: Some("cod_empty_window"),
@@ -997,7 +998,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         ActivateTab(-1) => CommandDef {
             brief: "Activate right-most tab".into(),
             doc: "Activates the tab on the far right".into(),
-            keys: vec![(Modifiers::SUPER, "9".into())],
+            keys: vec![],
             args: &[ArgType::ActiveWindow],
             menubar: &["Window", "Select Tab"],
             icon: None,
@@ -1005,11 +1006,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         ActivateTab(n) => {
             let n = *n;
             let ordinal = english_ordinal(n + 1);
-            let keys = if n >= 0 && n <= 7 {
-                vec![(Modifiers::SUPER, (n + 1).to_string())]
-            } else {
-                vec![]
-            };
+            let keys = vec![];
             CommandDef {
                 brief: format!("Activate {ordinal} Tab").into(),
                 doc: format!("Activates the {ordinal} tab").into(),
@@ -1268,15 +1265,15 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             doc: "Reloads the configuration file".into(),
             keys: vec![(Modifiers::SUPER, "r".into())],
             args: &[],
-            menubar: &["WezTerm"],
+            menubar: &["Terminal Harbor"],
             icon: Some("md_reload"),
         },
         QuitApplication => CommandDef {
-            brief: "Quit WezTerm".into(),
-            doc: "Quits WezTerm".into(),
+            brief: "Quit Terminal Harbor".into(),
+            doc: "Quits Terminal Harbor".into(),
             keys: vec![(Modifiers::SUPER, "q".into())],
             args: &[],
-            menubar: &["WezTerm"],
+            menubar: &["Terminal Harbor"],
             icon: Some("oct_stop"),
         },
         MoveTabRelative(-1) => CommandDef {
@@ -1597,6 +1594,47 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             args: &[ArgType::ActivePane],
             menubar: &["Window"],
             icon: Some("md_fullscreen"),
+        },
+        ToggleWorkspaceSidebar => CommandDef {
+            brief: "Toggle Workspace Sidebar".into(),
+            doc: "Shows or hides the Terminal Harbor workspace sidebar".into(),
+            keys: vec![(Modifiers::SUPER, "b".into())],
+            args: &[ArgType::ActiveWindow],
+            menubar: &["Window"],
+            icon: Some("cod_layout_sidebar_left"),
+        },
+        CreateWorkspace => CommandDef {
+            brief: "New Workspace".into(),
+            doc: "Creates and selects a workspace rooted at the active pane's working directory"
+                .into(),
+            keys: vec![(Modifiers::SUPER, "n".into())],
+            args: &[ArgType::ActivePane],
+            menubar: &["Window", "Workspace"],
+            icon: Some("md_folder_plus"),
+        },
+        ShowWorkspaceSwitcher => CommandDef {
+            brief: "Switch Workspace".into(),
+            doc: "Shows the searchable Terminal Harbor workspace switcher".into(),
+            keys: vec![(Modifiers::SUPER, "p".into())],
+            args: &[ArgType::ActiveWindow],
+            menubar: &["Window", "Workspace"],
+            icon: Some("cod_list_filter"),
+        },
+        ActivateWorkspace(index) => CommandDef {
+            brief: format!("Activate Workspace {}", index + 1).into(),
+            doc: format!(
+                "Activates workspace {} in Terminal Harbor sidebar order",
+                index + 1
+            )
+            .into(),
+            keys: if *index < 9 {
+                vec![(Modifiers::SUPER, (index + 1).to_string())]
+            } else {
+                vec![]
+            },
+            args: &[ArgType::ActiveWindow],
+            menubar: &["Window", "Workspace"],
+            icon: None,
         },
         ActivateLastTab => CommandDef {
             brief: "Activate the last active tab".into(),
@@ -1927,11 +1965,21 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             CommandDef {
                 brief: format!("Switch to {ordinal} {direction} workspace").into(),
                 doc: format!(
-                    "Switch to the {ordinal} {direction} workspace, \
-                             ordered lexicographically by workspace name"
+                    "Switch to the {ordinal} {direction} workspace in \
+                             Terminal Harbor sidebar order"
                 )
                 .into(),
-                keys: vec![],
+                keys: match *n {
+                    -1 => vec![(
+                        Modifiers::CTRL | Modifiers::SUPER,
+                        "[".into(),
+                    )],
+                    1 => vec![(
+                        Modifiers::CTRL | Modifiers::SUPER,
+                        "]".into(),
+                    )],
+                    _ => vec![],
+                },
                 args: &[ArgType::ActivePane],
                 menubar: &["Window", "Workspace"],
                 icon: None,
@@ -2133,6 +2181,20 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         ActivatePaneDirection(PaneDirection::Up),
         ActivatePaneDirection(PaneDirection::Down),
         TogglePaneZoomState,
+        CreateWorkspace,
+        ShowWorkspaceSwitcher,
+        ActivateWorkspace(0),
+        ActivateWorkspace(1),
+        ActivateWorkspace(2),
+        ActivateWorkspace(3),
+        ActivateWorkspace(4),
+        ActivateWorkspace(5),
+        ActivateWorkspace(6),
+        ActivateWorkspace(7),
+        ActivateWorkspace(8),
+        SwitchWorkspaceRelative(-1),
+        SwitchWorkspaceRelative(1),
+        ToggleWorkspaceSidebar,
         ActivateLastTab,
         ShowLauncher,
         ShowTabNavigator,

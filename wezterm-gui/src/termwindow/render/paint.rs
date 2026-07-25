@@ -42,6 +42,7 @@ impl crate::TermWindow {
                             break 'pass;
                         }
                         self.invalidate_fancy_tab_bar();
+                        self.invalidate_harbor_sidebar();
                         self.invalidate_modal();
                     }
                     Err(err) => {
@@ -65,6 +66,7 @@ impl crate::TermWindow {
                             self.recreate_texture_atlas(Some(size))
                         };
                         self.invalidate_fancy_tab_bar();
+                        self.invalidate_harbor_sidebar();
                         self.invalidate_modal();
 
                         if let Err(err) = result {
@@ -92,6 +94,7 @@ impl crate::TermWindow {
                         }
                     } else if err.root_cause().downcast_ref::<ClearShapeCache>().is_some() {
                         self.invalidate_fancy_tab_bar();
+                        self.invalidate_harbor_sidebar();
                         self.invalidate_modal();
                         self.shape_generation += 1;
                         self.shape_cache.borrow_mut().clear();
@@ -271,6 +274,16 @@ impl crate::TermWindow {
         if self.show_tab_bar {
             self.paint_tab_bar(&mut layers).context("paint_tab_bar")?;
         }
+
+        drop(layers);
+        self.paint_harbor_sidebar()
+            .context("paint_harbor_sidebar")?;
+
+        let gl_state = self.render_state.as_ref().unwrap();
+        let layer = gl_state
+            .layer_for_zindex(0)
+            .context("layer_for_zindex(0) after sidebar")?;
+        let mut layers = layer.quad_allocator();
 
         self.paint_window_borders(&mut layers)
             .context("paint_window_borders")?;

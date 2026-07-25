@@ -419,6 +419,12 @@ impl crate::TermWindow {
             .colors(bar_colors);
 
         let border = self.get_os_border();
+        let sidebar_width = self.harbor_sidebar_width() as f32;
+        let tab_bar_left = border.left.get() as f32 + sidebar_width;
+        let tab_bar_width = (self.dimensions.pixel_width as f32
+            - sidebar_width
+            - (border.left + border.right).get() as f32)
+            .max(0.);
 
         let mut computed = self.compute_element(
             &LayoutContext {
@@ -432,12 +438,7 @@ impl crate::TermWindow {
                     pixel_max: self.dimensions.pixel_width as f32,
                     pixel_cell: metrics.cell_size.width as f32,
                 },
-                bounds: euclid::rect(
-                    border.left.get() as f32,
-                    0.,
-                    self.dimensions.pixel_width as f32 - (border.left + border.right).get() as f32,
-                    tab_bar_height,
-                ),
+                bounds: euclid::rect(tab_bar_left, 0., tab_bar_width, tab_bar_height),
                 metrics: &metrics,
                 gl_state: self.render_state.as_ref().unwrap(),
                 zindex: 10,

@@ -5,8 +5,9 @@ use crate::colorease::ColorEase;
 use crate::frontend::{front_end, try_front_end};
 use crate::inputmap::InputMap;
 use crate::overlay::{
-    confirm_close_pane, confirm_close_tab, confirm_close_window, confirm_quit_program, launcher,
-    start_overlay, start_overlay_pane, CopyModeParams, CopyOverlay, LauncherArgs, LauncherFlags,
+    confirm_close_pane, confirm_close_tab, confirm_close_window, confirm_close_workspace,
+    confirm_quit_program, launcher, start_overlay, start_overlay_pane, CopyModeParams, CopyOverlay,
+    LauncherArgs, LauncherFlags,
     QuickSelectOverlay,
 };
 use crate::resize_increment_calculator::ResizeIncrementCalculator;
@@ -72,6 +73,7 @@ pub mod background;
 pub mod box_model;
 pub mod charselect;
 pub mod clipboard;
+mod harbor_sidebar;
 pub mod keyevent;
 pub mod modal;
 mod mouseevent;
@@ -154,6 +156,8 @@ pub enum TermWindowNotif {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UIItemType {
     TabBar(TabBarItem),
+    HarborWorkspace(String),
+    HarborAddWorkspace,
     CloseTab(usize),
     AboveScrollThumb,
     ScrollThumb,
@@ -394,6 +398,7 @@ pub struct TermWindow {
     show_scroll_bar: bool,
     tab_bar: TabBarState,
     fancy_tab_bar: Option<box_model::ComputedElement>,
+    harbor_sidebar: Option<box_model::ComputedElement>,
     pub right_status: String,
     pub left_status: String,
     last_ui_item: Option<UIItem>,
@@ -654,7 +659,10 @@ impl TermWindow {
         let padding_bottom = config.window_padding.bottom.evaluate_as_pixels(v_context) as usize;
 
         let mut dimensions = Dimensions {
-            pixel_width: (terminal_size.pixel_width + padding_left + padding_right) as usize,
+            pixel_width: (terminal_size.pixel_width
+                + padding_left
+                + padding_right
+                + crate::harbor_workspace::sidebar_width()) as usize,
             pixel_height: ((terminal_size.rows * render_metrics.cell_size.height as usize)
                 + padding_top
                 + padding_bottom) as usize
@@ -716,6 +724,7 @@ impl TermWindow {
             show_scroll_bar: config.enable_scroll_bar,
             tab_bar: TabBarState::default(),
             fancy_tab_bar: None,
+            harbor_sidebar: None,
             right_status: String::new(),
             left_status: String::new(),
             last_mouse_coords: (0, -1),
@@ -1203,6 +1212,10 @@ impl TermWindow {
                     alert: Alert::SetUserVar { name, value },
                     pane_id,
                 } => {
+                    if name.starts_with("TH_AGENT_") {
+                        self.invalidate_harbor_sidebar();
+                        window.invalidate();
+                    }
                     self.emit_user_var_event(pane_id, name, value);
                 }
                 MuxNotification::WindowTitleChanged { .. }
@@ -1438,6 +1451,11 @@ impl TermWindow {
     fn mux_pane_output_event(&mut self, pane_id: PaneId) {
         metrics::histogram!("mux.pane_output_event.rate").record(1.);
         if self.is_pane_visible(pane_id) {
+            if let Some(ref win) = self.window {
+                win.invalidate();
+            }
+        } else {
+            self.invalidate_harbor_sidebar();
             if let Some(ref win) = self.window {
                 win.invalidate();
             }
@@ -2381,7 +2399,7 @@ impl TermWindow {
             fuzzy_help_text: None,
             alphabet: None,
         };
-        self.show_launcher_impl(args, active_tab_idx);
+        self.show_launcher_impl(args, active_tab_idx, false);
     }
 
     fn show_launcher(&mut self) {
@@ -2397,10 +2415,29 @@ impl TermWindow {
             fuzzy_help_text: None,
             alphabet: None,
         };
-        self.show_launcher_impl(args, 0);
+        self.show_launcher_impl(args, 0, false);
     }
 
-    fn show_launcher_impl(&mut self, args: LauncherActionArgs, initial_choice_idx: usize) {
+    fn show_workspace_switcher(&mut self) {
+        crate::harbor_workspace::ensure_current_workspace(self.mux_window_id);
+        let args = LauncherActionArgs {
+            title: Some("Terminal Harbor Workspaces".to_string()),
+            flags: LauncherFlags::FUZZY,
+            help_text: Some(
+                "Select a workspace and press Enter  Esc=cancel  Type to filter".to_string(),
+            ),
+            fuzzy_help_text: Some("Find workspace: ".to_string()),
+            alphabet: None,
+        };
+        self.show_launcher_impl(args, 0, true);
+    }
+
+    fn show_launcher_impl(
+        &mut self,
+        args: LauncherActionArgs,
+        initial_choice_idx: usize,
+        show_harbor_workspaces: bool,
+    ) {
         let mux_window_id = self.mux_window_id;
         let window = self.window.as_ref().unwrap().clone();
 
@@ -2445,6 +2482,7 @@ impl TermWindow {
                 &help_text,
                 &fuzzy_help_text,
                 &alphabet,
+                show_harbor_workspaces,
             )
             .await;
 
@@ -2787,7 +2825,7 @@ impl TermWindow {
                     fuzzy_help_text: args.fuzzy_help_text.clone(),
                     alphabet: args.alphabet.clone(),
                 };
-                self.show_launcher_impl(args, 0);
+                self.show_launcher_impl(args, 0, false);
             }
             HideApplication => {
                 let con = Connection::get().expect("call on gui thread");
@@ -2994,6 +3032,28 @@ impl TermWindow {
                 };
                 tab.toggle_zoom();
             }
+            CreateWorkspace => {
+                self.harbor_create_workspace()?;
+            }
+            ShowWorkspaceSwitcher => {
+                self.show_workspace_switcher();
+            }
+            ActivateWorkspace(index) => {
+                crate::harbor_workspace::ensure_current_workspace(self.mux_window_id);
+                if let Some(workspace) = crate::harbor_workspace::workspace_at(*index) {
+                    self.harbor_activate_workspace(workspace)?;
+                }
+            }
+            ToggleWorkspaceSidebar => {
+                crate::harbor_workspace::toggle_sidebar();
+                self.invalidate_harbor_sidebar();
+                self.invalidate_fancy_tab_bar();
+                if let Some(window) = self.window.as_ref().cloned() {
+                    let dimensions = self.dimensions;
+                    self.apply_dimensions(&dimensions, None, &window);
+                    window.invalidate();
+                }
+            }
             SetPaneZoomState(zoomed) => {
                 let mux = Mux::get();
                 let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
@@ -3003,19 +3063,12 @@ impl TermWindow {
                 tab.set_zoomed(*zoomed);
             }
             SwitchWorkspaceRelative(delta) => {
-                let mux = Mux::get();
-                let workspace = mux.active_workspace();
-                let workspaces = mux.iter_workspaces();
-                let idx = workspaces.iter().position(|w| *w == workspace).unwrap_or(0);
-                let new_idx = idx as isize + delta;
-                let new_idx = if new_idx < 0 {
-                    workspaces.len() as isize + new_idx
-                } else {
-                    new_idx
-                };
-                let new_idx = new_idx as usize % workspaces.len();
-                if let Some(w) = workspaces.get(new_idx) {
-                    front_end().switch_workspace(w);
+                crate::harbor_workspace::ensure_current_workspace(self.mux_window_id);
+                let active_workspace = front_end().active_workspace();
+                if let Some(workspace) =
+                    crate::harbor_workspace::relative_workspace(*delta, &active_workspace)
+                {
+                    self.harbor_activate_workspace(workspace)?;
                 }
             }
             SwitchToWorkspace { name, spawn } => {
@@ -3249,6 +3302,10 @@ impl TermWindow {
         drop(mux_window);
 
         let tab_id = tab.tab_id();
+        if self.harbor_workspace_has_single_tab() {
+            self.close_current_workspace(tab, confirm);
+            return;
+        }
         if confirm && !tab.can_close_without_prompting(CloseReason::Tab) {
             if self.activate_tab(tab_idx as isize).is_err() {
                 return;
@@ -3271,6 +3328,10 @@ impl TermWindow {
             Some(tab) => tab,
             None => return,
         };
+        if self.harbor_workspace_has_single_tab() {
+            self.close_current_workspace(tab, confirm);
+            return;
+        }
         let tab_id = tab.tab_id();
         let mux_window_id = self.mux_window_id;
         if confirm && !tab.can_close_without_prompting(CloseReason::Tab) {
@@ -3283,6 +3344,50 @@ impl TermWindow {
         } else {
             mux.remove_tab(tab_id);
         }
+    }
+
+    fn harbor_workspace_has_single_tab(&self) -> bool {
+        let mux = Mux::get();
+        let workspace = front_end().active_workspace();
+        let tab_count: usize = mux
+            .iter_windows_in_workspace(&workspace)
+            .into_iter()
+            .filter_map(|window_id| mux.get_window(window_id))
+            .map(|window| window.len())
+            .sum();
+        tab_count == 1
+    }
+
+    fn close_current_workspace(&mut self, tab: Arc<Tab>, confirm: bool) {
+        let tab_id = tab.tab_id();
+        if confirm && !tab.can_close_without_prompting(CloseReason::Tab) {
+            let window = self.window.clone().unwrap();
+            let (overlay, future) = start_overlay(self, &tab, move |tab_id, term| {
+                confirm_close_workspace(tab_id, term, window)
+            });
+            self.assign_overlay(tab_id, overlay);
+            promise::spawn::spawn(future).detach();
+        } else {
+            self.harbor_close_current_workspace_now();
+        }
+    }
+
+    pub(crate) fn harbor_close_current_workspace_now(&mut self) {
+        let mux = Mux::get();
+        let workspace = front_end().active_workspace();
+        let tab_id = mux
+            .get_active_tab_for_window(self.mux_window_id)
+            .map(|tab| tab.tab_id());
+        let next = crate::harbor_workspace::remove_workspace(&workspace);
+        if let Some(next) = next {
+            if let Err(err) = self.harbor_activate_workspace(next) {
+                log::error!("activating workspace after close: {err:#}");
+            }
+        }
+        if let Some(tab_id) = tab_id {
+            mux.remove_tab(tab_id);
+        }
+        self.invalidate_harbor_sidebar();
     }
 
     pub fn pane_state(&self, pane_id: PaneId) -> RefMut<'_, PaneState> {
