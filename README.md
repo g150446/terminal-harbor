@@ -78,6 +78,25 @@ The command emits standard iTerm2-compatible user variables named
 `TH_AGENT_STATE`, `TH_AGENT_NAME`, and `TH_AGENT_MESSAGE`. Existing WezTerm
 configuration and CLI entry points remain compatible.
 
+## Mobile pairing
+
+Terminal Harbor can be controlled from the companion Flutter app
+([terminal-harbor-mobile](../terminal-harbor-mobile)).
+
+1. Start Terminal Harbor (the mobile bridge listens on LAN port `7780`).
+2. In the Harbor sidebar, click **Pair mobile**. A square QR image opens in your
+   image viewer and the pair URI is copied to the clipboard.
+3. Scan the QR code with the mobile app (same Wi‑Fi), or paste the URI into the
+   app's **Manual** entry. The URI encodes a short-lived
+   `harbor://pair?...` token; the app exchanges it for a device token.
+4. From the phone: list workspaces, switch the active workspace, mirror the
+   active pane’s screen (last 60 lines, refreshed every second), and send
+   instruction text to the workspace’s active pane — Send also delivers a real
+   Enter key event so shells and AI agents execute the line.
+
+The bridge speaks a small JSON HTTP API (not the WezTerm binary mux protocol).
+See `openapi/harbor-mobile.yaml` in the mobile repository for the contract.
+
 ## Upstream foundation
 
 <img height="128" alt="WezTerm Icon" src="https://raw.githubusercontent.com/wezterm/wezterm/main/assets/icon/wezterm-icon.svg" align="left"> *A GPU-accelerated cross-platform terminal emulator and multiplexer written by <a href="https://github.com/wez">@wez</a> and implemented in <a href="https://www.rust-lang.org/">Rust</a>*

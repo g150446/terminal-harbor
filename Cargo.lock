@@ -397,7 +397,7 @@ dependencies = [
  "arg_enum_proc_macro",
  "arrayvec",
  "log",
- "num-rational",
+ "num-rational 0.4.2",
  "num-traits",
  "pastey",
  "rayon",
@@ -416,7 +416,7 @@ dependencies = [
  "arrayvec",
  "log",
  "nom 8.0.0",
- "num-rational",
+ "num-rational 0.4.2",
  "v_frame",
 ]
 
@@ -720,6 +720,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "checked_int_cast"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17cc5e6b5ab06331c33589842070416baa137e8b0eb912b008cfd4a78ada7919"
+
+[[package]]
 name = "chrono"
 version = "0.4.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -898,7 +904,7 @@ dependencies = [
  "config",
  "csscolorparser",
  "deltae",
- "image",
+ "image 0.25.10",
  "lazy_static",
  "log",
  "lru",
@@ -1760,9 +1766,9 @@ source = "git+https://github.com/wez/finl_unicode.git?branch=no_std#a1892f262455
 
 [[package]]
 name = "fixed"
-version = "1.31.0"
+version = "1.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9af2cbf772fa6d1c11358f92ef554cb6b386201210bcf0e91fb7fba8a907fb40"
+checksum = "85c6e0b89bf864acd20590dbdbad56f69aeb898abfc9443008fd7bd48b2cc85a"
 dependencies = [
  "az",
  "bytemuck",
@@ -2723,6 +2729,20 @@ dependencies = [
  "same-file",
  "walkdir",
  "winapi-util",
+]
+
+[[package]]
+name = "image"
+version = "0.23.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24ffcb7e7244a9bf19d35bf2883b9c080c4ced3c07a9895572178cdb8f13f6a1"
+dependencies = [
+ "bytemuck",
+ "byteorder",
+ "color_quant",
+ "num-iter",
+ "num-rational 0.3.2",
+ "num-traits",
 ]
 
 [[package]]
@@ -3770,7 +3790,7 @@ dependencies = [
  "num-complex",
  "num-integer",
  "num-iter",
- "num-rational",
+ "num-rational 0.4.2",
  "num-traits",
 ]
 
@@ -3824,6 +3844,17 @@ name = "num-iter"
 version = "0.1.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1429034a0490724d0075ebb2bc9e875d6503c3cf69e235a8941aa757d83ef5bf"
+dependencies = [
+ "autocfg",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-rational"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12ac428b1cb17fce6f731001d307d351ec70a6d202fc2e60f7d4c5e42d8f4f07"
 dependencies = [
  "autocfg",
  "num-integer",
@@ -4560,6 +4591,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f6d64c71eb498fe9eae14ce4ec935c555749aef511cca85b5568910d6e48001"
 dependencies = [
  "bytemuck",
+]
+
+[[package]]
+name = "qrcode"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16d2f1455f3630c6e5107b4f2b94e74d76dea80736de0981fd27644216cff57f"
+dependencies = [
+ "checked_int_cast",
+ "image 0.23.14",
 ]
 
 [[package]]
@@ -5846,7 +5887,7 @@ dependencies = [
  "finl_unicode",
  "fixedbitset",
  "fnv",
- "image",
+ "image 0.25.10",
  "k9",
  "libc",
  "log",
@@ -6801,7 +6842,7 @@ dependencies = [
  "filedescriptor",
  "hostname",
  "humantime",
- "image",
+ "image 0.25.10",
  "libc",
  "log",
  "mux",
@@ -6852,7 +6893,7 @@ name = "wezterm-cell"
 version = "0.1.0"
 dependencies = [
  "finl_unicode",
- "image",
+ "image 0.25.10",
  "log",
  "ordered-float 4.6.0",
  "serde",
@@ -6962,7 +7003,7 @@ dependencies = [
  "criterion",
  "env_logger 0.11.10",
  "hex",
- "image",
+ "image 0.25.10",
  "k9",
  "log",
  "nix",
@@ -7001,7 +7042,7 @@ dependencies = [
  "fontconfig",
  "freetype",
  "harfbuzz",
- "image",
+ "image 0.25.10",
  "k9",
  "lazy_static",
  "lfucache",
@@ -7050,8 +7091,10 @@ dependencies = [
  "frecency",
  "futures",
  "hdrhistogram",
+ "hostname",
  "http_req",
- "image",
+ "image 0.23.14",
+ "image 0.25.10",
  "k9",
  "lazy_static",
  "lfucache",
@@ -7067,6 +7110,7 @@ dependencies = [
  "parking_lot",
  "portable-pty",
  "promise",
+ "qrcode",
  "rangeset",
  "ratelim",
  "rayon",
@@ -7261,7 +7305,7 @@ dependencies = [
  "finl_unicode",
  "hex",
  "humansize",
- "image",
+ "image 0.25.10",
  "k9",
  "lazy_static",
  "log",

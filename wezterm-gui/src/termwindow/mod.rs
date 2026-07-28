@@ -158,6 +158,10 @@ pub enum UIItemType {
     TabBar(TabBarItem),
     HarborWorkspace(String),
     HarborAddWorkspace,
+    HarborPairMobile,
+    HarborRefreshPair,
+    HarborOpenPairQr,
+    HarborCopyPairUri,
     CloseTab(usize),
     AboveScrollThumb,
     ScrollThumb,
@@ -820,9 +824,11 @@ impl TermWindow {
             origin = position.origin;
         }
 
+        let position_was_explicit = x.is_some() || y.is_some();
+        let geometry_origin = origin.clone();
         let geometry = RequestedWindowGeometry {
-            width: Dimension::Pixels(dimensions.pixel_width as f32),
-            height: Dimension::Pixels(dimensions.pixel_height as f32),
+            width: Dimension::Percent(0.75),
+            height: Dimension::Percent(0.75),
             x,
             y,
             origin,
@@ -844,6 +850,31 @@ impl TermWindow {
         )
         .await?;
         tw.borrow_mut().window.replace(window.clone());
+
+        // Center new windows on screen when no explicit position was
+        // requested (an explicit position always wins). The window size is
+        // 75% of the same bounds used to resolve the geometry.
+        if !position_was_explicit {
+            if let Some(conn) = Connection::get() {
+                if let Ok(screens) = conn.screens() {
+                    let bounds = match &geometry_origin {
+                        GeometryOrigin::ScreenCoordinateSystem => screens.virtual_rect,
+                        GeometryOrigin::MainScreen => screens.main.rect,
+                        GeometryOrigin::ActiveScreen => screens.active.rect,
+                        GeometryOrigin::Named(name) => screens
+                            .by_name
+                            .get(name)
+                            .map(|info| info.rect)
+                            .unwrap_or(screens.main.rect),
+                    };
+                    let width = (bounds.width() as f64 * 0.75) as isize;
+                    let height = (bounds.height() as f64 * 0.75) as isize;
+                    let px = bounds.origin.x + (bounds.width() - width).max(0) / 2;
+                    let py = bounds.origin.y + (bounds.height() - height).max(0) / 2;
+                    window.set_window_position(ScreenPoint::new(px, py));
+                }
+            }
+        }
 
         Self::apply_icon(&window)?;
 

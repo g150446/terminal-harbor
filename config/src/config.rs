@@ -772,7 +772,7 @@ pub struct Config {
     #[dynamic(default = "default_enq_answerback")]
     pub enq_answerback: String,
 
-    #[dynamic(default)]
+    #[dynamic(default = "default_adjust_window_size_when_changing_font_size")]
     pub adjust_window_size_when_changing_font_size: Option<bool>,
 
     #[dynamic(default = "default_tiling_desktop_environments")]
@@ -1750,6 +1750,10 @@ fn default_font_size() -> f64 {
     12.0
 }
 
+fn default_adjust_window_size_when_changing_font_size() -> Option<bool> {
+    Some(false)
+}
+
 pub(crate) fn compute_cache_dir() -> anyhow::Result<PathBuf> {
     if let Some(runtime) = dirs_next::cache_dir() {
         return Ok(runtime.join("wezterm"));
@@ -2000,8 +2004,8 @@ pub enum NewlineCanon {
 
 #[derive(FromDynamic, ToDynamic, Clone, Copy, Debug, Default)]
 pub enum WindowCloseConfirmation {
-    #[default]
     AlwaysPrompt,
+    #[default]
     NeverPrompt,
     // TODO: something smart where we see whether the
     // running programs are stateful

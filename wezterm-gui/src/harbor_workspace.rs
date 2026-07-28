@@ -9,8 +9,10 @@ use uuid::Uuid;
 
 const SCHEMA_VERSION: u32 = 2;
 const LEGACY_SCHEMA_VERSION: u32 = 1;
-pub const SIDEBAR_DEFAULT_WIDTH: usize = 240;
-pub const SIDEBAR_MIN_WIDTH: usize = 180;
+/// Previous default before the mobile pairing UI needed more room.
+const LEGACY_SIDEBAR_DEFAULT_WIDTH: usize = 240;
+pub const SIDEBAR_DEFAULT_WIDTH: usize = 480;
+pub const SIDEBAR_MIN_WIDTH: usize = 360;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HarborWorkspace {
@@ -117,9 +119,16 @@ fn load_if_needed(registry: &mut WorkspaceRegistry) {
             if state.schema_version == SCHEMA_VERSION
                 || state.schema_version == LEGACY_SCHEMA_VERSION =>
         {
-            let migrated = state.schema_version == LEGACY_SCHEMA_VERSION;
+            let mut migrated = state.schema_version == LEGACY_SCHEMA_VERSION;
             if migrated {
                 migrate_legacy_workspaces(&mut state);
+            }
+            // Widen sidebars that still use the pre-pairing default.
+            if state.sidebar_width == LEGACY_SIDEBAR_DEFAULT_WIDTH
+                || state.sidebar_width < SIDEBAR_MIN_WIDTH
+            {
+                state.sidebar_width = SIDEBAR_DEFAULT_WIDTH;
+                migrated = true;
             }
             state.sidebar_width = state.sidebar_width.max(SIDEBAR_MIN_WIDTH);
             state.workspaces.sort_by_key(|workspace| workspace.order);

@@ -56,6 +56,8 @@ futures.workspace = true
 hdrhistogram.workspace = true
 http_req.workspace = true
 image.workspace = true
+# Used for rendering the mobile-pairing QR code; matches qrcode 0.12's `image` integration.
+image023 = { package = "image", version = "0.23", default-features = false }
 lazy_static.workspace = true
 lfucache.workspace = true
 libc.workspace = true
@@ -70,7 +72,9 @@ ordered-float.workspace = true
 parking_lot.workspace = true
 portable-pty = { workspace=true, features = ["serde_support"]}
 promise.workspace = true
+qrcode.workspace = true
 rangeset.workspace = true
+hostname.workspace = true
 ratelim.workspace = true
 rayon.workspace = true
 regex.workspace = true

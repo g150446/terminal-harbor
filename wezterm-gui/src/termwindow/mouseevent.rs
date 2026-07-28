@@ -39,7 +39,12 @@ impl super::TermWindow {
             UIItemType::TabBar(_) => {
                 self.update_title_post_status();
             }
-            UIItemType::HarborWorkspace(_) | UIItemType::HarborAddWorkspace => {}
+            UIItemType::HarborWorkspace(_)
+            | UIItemType::HarborAddWorkspace
+            | UIItemType::HarborPairMobile
+            | UIItemType::HarborRefreshPair
+            | UIItemType::HarborOpenPairQr
+            | UIItemType::HarborCopyPairUri => {}
             UIItemType::CloseTab(_)
             | UIItemType::AboveScrollThumb
             | UIItemType::BelowScrollThumb
@@ -51,7 +56,12 @@ impl super::TermWindow {
     fn enter_ui_item(&mut self, item: &UIItem) {
         match item.item_type {
             UIItemType::TabBar(_) => {}
-            UIItemType::HarborWorkspace(_) | UIItemType::HarborAddWorkspace => {}
+            UIItemType::HarborWorkspace(_)
+            | UIItemType::HarborAddWorkspace
+            | UIItemType::HarborPairMobile
+            | UIItemType::HarborRefreshPair
+            | UIItemType::HarborOpenPairQr
+            | UIItemType::HarborCopyPairUri => {}
             UIItemType::CloseTab(_)
             | UIItemType::AboveScrollThumb
             | UIItemType::BelowScrollThumb
@@ -385,6 +395,43 @@ impl super::TermWindow {
                 if matches!(event.kind, WMEK::Press(MousePress::Left)) {
                     if let Err(err) = self.harbor_create_workspace() {
                         log::error!("creating Terminal Harbor workspace: {err:#}");
+                    }
+                }
+                context.set_cursor(Some(MouseCursor::Arrow));
+            }
+            UIItemType::HarborPairMobile => {
+                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
+                    let visible = crate::harbor_mobile::toggle_pairing_ui();
+                    if visible {
+                        // Surface the scannable QR immediately and provide the
+                        // URI as a manual-entry fallback.
+                        crate::harbor_mobile::open_pair_qr();
+                        if let Some(uri) = crate::harbor_mobile::current_pair_uri() {
+                            context.set_clipboard(window::Clipboard::Clipboard, uri);
+                        }
+                    }
+                    self.invalidate_harbor_sidebar();
+                }
+                context.set_cursor(Some(MouseCursor::Arrow));
+            }
+            UIItemType::HarborRefreshPair => {
+                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
+                    crate::harbor_mobile::refresh_pair_offer();
+                    crate::harbor_mobile::open_pair_qr();
+                    self.invalidate_harbor_sidebar();
+                }
+                context.set_cursor(Some(MouseCursor::Arrow));
+            }
+            UIItemType::HarborOpenPairQr => {
+                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
+                    crate::harbor_mobile::open_pair_qr();
+                }
+                context.set_cursor(Some(MouseCursor::Arrow));
+            }
+            UIItemType::HarborCopyPairUri => {
+                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
+                    if let Some(uri) = crate::harbor_mobile::current_pair_uri() {
+                        context.set_clipboard(window::Clipboard::Clipboard, uri);
                     }
                 }
                 context.set_cursor(Some(MouseCursor::Arrow));

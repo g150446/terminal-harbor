@@ -504,6 +504,10 @@ impl GuiFrontEnd {
         }
         None
     }
+
+    pub fn first_window(&self) -> Option<Window> {
+        self.known_windows.borrow().keys().next().cloned()
+    }
 }
 
 thread_local! {
@@ -564,6 +568,8 @@ pub fn try_new() -> Result<Rc<GuiFrontEnd>, Error> {
         .config_subscription
         .borrow_mut()
         .replace(config_subscription);
+
+    crate::harbor_mobile::ensure_running();
 
     Ok(front_end)
 }

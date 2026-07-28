@@ -538,6 +538,19 @@ impl super::TermWindow {
     }
 
     pub fn reset_font_and_window_size(&mut self, window: &Window) -> anyhow::Result<()> {
+        use ::window::{Connection, ConnectionOps};
+        self.reset_font_size();
+        if let Some(conn) = Connection::get() {
+            if let Ok(screens) = conn.screens() {
+                let rect = screens.active.rect;
+                let width = (rect.width() as f64 * 0.75) as usize;
+                let height = (rect.height() as f64 * 0.75) as usize;
+                if width > 0 && height > 0 {
+                    self.set_inner_size(window, width, height);
+                    return Ok(());
+                }
+            }
+        }
         let size = self.config.initial_size(
             self.dimensions.dpi as u32,
             Some(crate::cell_pixel_dims(
