@@ -41,6 +41,7 @@ mod download;
 mod frontend;
 mod glyphcache;
 mod harbor_mobile;
+mod harbor_settings;
 mod harbor_workspace;
 mod inputmap;
 mod overlay;
@@ -400,6 +401,7 @@ async fn trigger_and_log_gui_attached(domain: MuxDomain) {
 
 fn cell_pixel_dims(config: &ConfigHandle, dpi: f64) -> anyhow::Result<(usize, usize)> {
     let fontconfig = Rc::new(FontConfiguration::new(Some(config.clone()), dpi as usize)?);
+    fontconfig.change_scaling(crate::harbor_settings::font_scale(), dpi as usize);
     let render_metrics = RenderMetrics::new(&fontconfig)?;
     Ok((
         render_metrics.cell_size.width as usize,

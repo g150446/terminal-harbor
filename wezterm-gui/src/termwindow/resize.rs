@@ -72,18 +72,30 @@ impl super::TermWindow {
 
     pub fn apply_pending_scale_changes(&mut self) {
         while self.resizes_pending == 0 {
-            match self.pending_scale_changes.pop_front() {
+            let applied = match self.pending_scale_changes.pop_front() {
                 Some(ScaleChange::Relative(change)) => {
                     if let Some(window) = self.window.as_ref().map(|w| w.clone()) {
                         self.adjust_font_scale(self.fonts.get_font_scale() * change, &window);
+                        true
+                    } else {
+                        false
                     }
                 }
                 Some(ScaleChange::Absolute(change)) => {
                     if let Some(window) = self.window.as_ref().map(|w| w.clone()) {
                         self.adjust_font_scale(change, &window);
+                        true
+                    } else {
+                        false
                     }
                 }
                 None => break,
+            };
+            if applied {
+                let font_scale = self.fonts.get_font_scale();
+                if let Err(err) = crate::harbor_settings::set_font_scale(font_scale) {
+                    log::error!("saving Terminal Harbor font scale: {err:#}");
+                }
             }
         }
     }
