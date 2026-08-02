@@ -163,6 +163,12 @@ mobileを更新します。workspace作成対応では、mobileから`POST /v1/w
 確認します。relative pathまたは存在しないpathは`400`で回復可能に失敗し、既存の
 workspaceやpairingを削除してはいけません。
 
+tab/workspace lifecycle APIの受け入れ確認には、破棄可能なworkspaceを使います。
+2つ目のtabを作成して切替後、non-final tabだけをcloseできること、final tabのcloseが
+`409`になること、workspace closeでは全tab/pane/processを終了する確認がmobileに
+表示されることを確認します。DELETE要求は認証に加えてbodyの`confirm: true`が必須
+です。実運用workspaceをテスト対象にせず、終了したprocessは復元不能として扱います。
+
 HMAC要求はMacとphoneの時計差が5分を超えると拒否されます。全endpointで同時に
 認証失敗する場合は、秘密情報を表示する前に時計、`client_id`の存続、desktop/mobile
 の配備順を確認します。nonce replay cacheはプロセス内状態なので、再起動を認証回避

@@ -89,6 +89,11 @@ Full contract: `openapi/harbor-mobile.yaml` in the mobile repo.
 | GET | `/v1/session` | Connection check plus desktop identity metadata |
 | GET | `/v1/workspaces` | Workspace list with activity state |
 | POST | `/v1/workspaces` | Create and activate a workspace; optional body field `root` is an absolute desktop directory |
+| DELETE | `/v1/workspaces/{id}` | Confirmed close of the workspace and all tabs/panes |
+| GET | `/v1/workspaces/{id}/tabs` | List tabs, active state, and pane count |
+| POST | `/v1/workspaces/{id}/tabs` | Queue creation and activation of a tab |
+| POST | `/v1/workspaces/{id}/tabs/{tabId}/activate` | Activate a tab |
+| DELETE | `/v1/workspaces/{id}/tabs/{tabId}` | Confirmed close of a non-final tab and all panes |
 | POST | `/v1/workspaces/{id}/activate` | Switch active workspace |
 | POST | `/v1/workspaces/{id}/instruction` | Body `{text, submit=true}` |
 | GET | `/v1/workspaces/{id}/screen?lines=N` | Plain-text screen mirror, N=1..200, default 60 |
@@ -100,6 +105,13 @@ must name an existing directory. The bridge persists the new Harbor workspace,
 queues activation on the GUI thread, and returns `201` with the workspace
 record. A mobile release that exposes this action therefore requires the
 desktop bridge release to be deployed and restarted first.
+
+DELETE bodies must contain `{"confirm":true}`. This is a protocol guard in
+addition to the Android confirmation UI. Closing a tab terminates all of its
+panes and is rejected with `409` when it is the workspace's final tab. Closing
+the workspace removes its persisted registry entry, terminates every tab/pane,
+and activates the adjacent registered workspace when one exists. API version
+1.1.0 introduced these lifecycle endpoints.
 
 ### Session identity and compatibility
 

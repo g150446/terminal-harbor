@@ -104,9 +104,8 @@ Terminal Harbor can be controlled from the companion Flutter app
 3. Scan the QR code with the mobile app over Tailscale or the same local
    network, or paste the URI into the app's **Manual** entry. The URI encodes a
    short-lived `harbor://pair?...` token; the app exchanges it for a device token.
-4. From the phone: create workspaces for desktop directories, list and switch
-   workspaces, mirror the active pane’s screen (last 60 lines, refreshed every
-   second), and send
+4. From the phone: create and close workspaces, create/switch/close their tabs,
+   mirror the active pane’s screen (last 60 lines, refreshed every second), and send
    instruction text to the workspace’s active pane — Send also delivers a real
    Enter key event so shells and AI agents execute the line.
 

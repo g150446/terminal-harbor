@@ -5,6 +5,7 @@ use crate::termwindow::TermWindowNotif;
 use anyhow::{anyhow, Context};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use config::keyassignment::SpawnTabDomain;
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
@@ -27,7 +28,7 @@ use window::WindowOps;
 
 pub const DEFAULT_PORT: u16 = 7780;
 const PAIR_TOKEN_TTL: Duration = Duration::from_secs(5 * 60);
-const API_VERSION: &str = "1.0.0";
+const API_VERSION: &str = "1.1.0";
 const AUTH_VERSION: &str = "hmac-sha256-v1";
 const AUTH_CLOCK_SKEW_SECS: u64 = 5 * 60;
 const REPLAY_TTL_SECS: u64 = 10 * 60;
@@ -646,10 +647,12 @@ fn write_response(stream: &mut TcpStream, response: HttpResponse) -> anyhow::Res
     let reason = match status {
         200 => "OK",
         201 => "Created",
+        202 => "Accepted",
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
         500 => "Internal Server Error",
         _ => "Error",
     };
@@ -664,7 +667,7 @@ fn write_response(stream: &mut TcpStream, response: HttpResponse) -> anyhow::Res
          Content-Length: {}\r\n\
          Access-Control-Allow-Origin: *\r\n\
          Access-Control-Allow-Headers: Authorization, Content-Type, X-Harbor-Client-Id, X-Harbor-Timestamp, X-Harbor-Nonce, X-Harbor-Signature\r\n\
-         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+         Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n\
          {extra_headers}Connection: close\r\n\r\n",
         response.body.len()
     );
@@ -675,6 +678,13 @@ fn write_response(stream: &mut TcpStream, response: HttpResponse) -> anyhow::Res
 
 fn json_error(msg: &str) -> String {
     serde_json::json!({ "error": msg }).to_string()
+}
+
+fn confirmed_destructive_request(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.get("confirm").and_then(|confirm| confirm.as_bool()))
+        == Some(true)
 }
 
 fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
@@ -759,6 +769,20 @@ fn dispatch(
     };
 
     let finish = |status, body| signed_response(status, body, response_auth.clone());
+    let workspace_error = |err: anyhow::Error| {
+        let message = format!("{err:#}");
+        let status = if message.contains("last tab") {
+            409
+        } else if message.contains("not found")
+            || message.contains("invalid workspace id")
+            || message.contains("invalid tab id")
+        {
+            404
+        } else {
+            500
+        };
+        finish(status, json_error(&message))
+    };
 
     if method == "GET" && path == "/v1/identity" {
         let inner = INNER.lock();
@@ -815,6 +839,67 @@ fn dispatch(
             Ok(json) => finish(201, json),
             Err(err) => finish(400, json_error(&format!("{err:#}"))),
         };
+    }
+
+    if let Some(id) = path
+        .strip_prefix("/v1/workspaces/")
+        .and_then(|rest| rest.strip_suffix("/tabs"))
+    {
+        let id = id.to_string();
+        if method == "GET" {
+            return match run_on_main(move || list_tabs_json(&id)) {
+                Ok(json) => finish(200, json),
+                Err(err) => workspace_error(err),
+            };
+        }
+        if method == "POST" {
+            return match run_on_main(move || create_tab(&id)) {
+                Ok(()) => finish(202, serde_json::json!({"ok": true}).to_string()),
+                Err(err) => workspace_error(err),
+            };
+        }
+    }
+
+    if let Some((workspace_id, tab_action)) = path
+        .strip_prefix("/v1/workspaces/")
+        .and_then(|rest| rest.split_once("/tabs/"))
+    {
+        let (tab_id, activate) = match tab_action.strip_suffix("/activate") {
+            Some(tab_id) => (tab_id, true),
+            None => (tab_action, false),
+        };
+        let workspace_id = workspace_id.to_string();
+        let tab_id = tab_id.to_string();
+        if method == "POST" && activate {
+            return match run_on_main(move || activate_tab(&workspace_id, &tab_id)) {
+                Ok(()) => finish(200, serde_json::json!({"ok": true}).to_string()),
+                Err(err) => workspace_error(err),
+            };
+        }
+        if method == "DELETE" && !activate {
+            if !confirmed_destructive_request(body) {
+                return finish(400, json_error("explicit confirmation is required"));
+            }
+            return match run_on_main(move || close_tab(&workspace_id, &tab_id)) {
+                Ok(()) => finish(200, serde_json::json!({"ok": true}).to_string()),
+                Err(err) => workspace_error(err),
+            };
+        }
+    }
+
+    if method == "DELETE" {
+        if let Some(id) = path.strip_prefix("/v1/workspaces/") {
+            if !id.contains('/') {
+                if !confirmed_destructive_request(body) {
+                    return finish(400, json_error("explicit confirmation is required"));
+                }
+                let id = id.to_string();
+                return match run_on_main(move || close_workspace(&id)) {
+                    Ok(()) => finish(200, serde_json::json!({"ok": true}).to_string()),
+                    Err(err) => workspace_error(err),
+                };
+            }
+        }
     }
 
     if let Some(id) = path
@@ -894,7 +979,7 @@ fn dispatch(
         }
     }
 
-    if method != "GET" && method != "POST" {
+    if method != "GET" && method != "POST" && method != "DELETE" {
         return finish(405, json_error("method not allowed"));
     }
     finish(404, json_error("not found"))
@@ -1101,6 +1186,151 @@ fn create_workspace(requested_root: Option<String>) -> anyhow::Result<String> {
         "selected": true,
     })
     .to_string())
+}
+
+fn list_tabs_json(workspace_id: &str) -> anyhow::Result<String> {
+    let workspace = find_workspace(workspace_id)?;
+    let mux = Mux::get();
+    let mut tabs = Vec::new();
+    let mut index = 0usize;
+    for window_id in mux.iter_windows_in_workspace(&workspace.mux_workspace) {
+        let Some(window) = mux.get_window(window_id) else {
+            continue;
+        };
+        let active_id = window.get_active().map(|tab| tab.tab_id());
+        for tab in window.iter() {
+            index += 1;
+            let title = match tab.get_title().trim() {
+                "" => tab
+                    .get_active_pane()
+                    .map(|pane| pane.get_title())
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| format!("Tab {index}")),
+                title => title.to_string(),
+            };
+            tabs.push(serde_json::json!({
+                "id": tab.tab_id().to_string(),
+                "title": title,
+                "selected": active_id == Some(tab.tab_id()),
+                "pane_count": tab.iter_panes().len(),
+            }));
+        }
+    }
+    Ok(serde_json::json!({"tabs": tabs}).to_string())
+}
+
+fn find_workspace_tab(
+    workspace_id: &str,
+    tab_id: &str,
+) -> anyhow::Result<(harbor_workspace::HarborWorkspace, usize, usize)> {
+    let workspace = find_workspace(workspace_id)?;
+    let tab_id = tab_id
+        .parse::<usize>()
+        .map_err(|_| anyhow!("invalid tab id"))?;
+    let mux = Mux::get();
+    for window_id in mux.iter_windows_in_workspace(&workspace.mux_workspace) {
+        let Some(window) = mux.get_window(window_id) else {
+            continue;
+        };
+        if window.iter().any(|tab| tab.tab_id() == tab_id) {
+            return Ok((workspace, window_id, tab_id));
+        }
+    }
+    Err(anyhow!("tab not found"))
+}
+
+fn create_tab(workspace_id: &str) -> anyhow::Result<()> {
+    let workspace = find_workspace(workspace_id)?;
+    let mux = Mux::get();
+    let window_id = mux
+        .iter_windows_in_workspace(&workspace.mux_workspace)
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("workspace has no active window"))?;
+    let tab = mux
+        .get_active_tab_for_window(window_id)
+        .ok_or_else(|| anyhow!("workspace has no active tab"))?;
+    let pane_id = tab.get_active_pane().map(|pane| pane.pane_id());
+    let size = tab.get_size();
+    let workspace_name = workspace.mux_workspace;
+    promise::spawn::spawn(async move {
+        if let Err(err) = mux
+            .spawn_tab_or_window(
+                Some(window_id),
+                SpawnTabDomain::CurrentPaneDomain,
+                None,
+                None,
+                size,
+                pane_id,
+                workspace_name,
+                None,
+            )
+            .await
+        {
+            log::error!("mobile create tab: {err:#}");
+        }
+    })
+    .detach();
+    Ok(())
+}
+
+fn activate_tab(workspace_id: &str, tab_id: &str) -> anyhow::Result<()> {
+    let (workspace, window_id, tab_id) = find_workspace_tab(workspace_id, tab_id)?;
+    let mux = Mux::get();
+    let mut window = mux
+        .get_window_mut(window_id)
+        .ok_or_else(|| anyhow!("workspace window not found"))?;
+    let tab_index = window
+        .idx_by_id(tab_id)
+        .ok_or_else(|| anyhow!("tab not found"))?;
+    window.save_and_then_set_active(tab_index);
+    drop(window);
+    let frontend =
+        crate::frontend::try_front_end().ok_or_else(|| anyhow!("frontend unavailable"))?;
+    if frontend.active_workspace() != workspace.mux_workspace {
+        frontend.switch_workspace(&workspace.mux_workspace);
+    }
+    Ok(())
+}
+
+fn close_tab(workspace_id: &str, tab_id: &str) -> anyhow::Result<()> {
+    let (workspace, _, tab_id) = find_workspace_tab(workspace_id, tab_id)?;
+    let mux = Mux::get();
+    let tab_count = mux
+        .iter_windows_in_workspace(&workspace.mux_workspace)
+        .into_iter()
+        .filter_map(|window_id| mux.get_window(window_id))
+        .map(|window| window.len())
+        .sum::<usize>();
+    if tab_count <= 1 {
+        anyhow::bail!("cannot close the last tab; close the workspace instead");
+    }
+    mux.remove_tab(tab_id);
+    Ok(())
+}
+
+fn close_workspace(workspace_id: &str) -> anyhow::Result<()> {
+    let workspace = find_workspace(workspace_id)?;
+    let mux = Mux::get();
+    let tab_ids = mux
+        .iter_windows_in_workspace(&workspace.mux_workspace)
+        .into_iter()
+        .filter_map(|window_id| mux.get_window(window_id))
+        .flat_map(|window| window.iter().map(|tab| tab.tab_id()).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let was_active = crate::frontend::try_front_end()
+        .map(|frontend| frontend.active_workspace() == workspace.mux_workspace)
+        .unwrap_or(false);
+    let next = harbor_workspace::remove_workspace(&workspace.mux_workspace);
+    if was_active {
+        if let Some(next) = next {
+            activate_workspace(&next.id.to_string())?;
+        }
+    }
+    for tab_id in tab_ids {
+        mux.remove_tab(tab_id);
+    }
+    Ok(())
 }
 
 fn find_workspace(id: &str) -> anyhow::Result<harbor_workspace::HarborWorkspace> {
@@ -1332,6 +1562,14 @@ mod tests {
     fn workspace_creation_rejects_relative_directories() {
         let error = create_workspace(Some("relative/project".to_string())).unwrap_err();
         assert!(error.to_string().contains("absolute path"));
+    }
+
+    #[test]
+    fn destructive_requests_require_literal_confirmation() {
+        assert!(confirmed_destructive_request(br#"{"confirm":true}"#));
+        assert!(!confirmed_destructive_request(br#"{"confirm":false}"#));
+        assert!(!confirmed_destructive_request(br#"{}"#));
+        assert!(!confirmed_destructive_request(b"not json"));
     }
 
     #[test]
