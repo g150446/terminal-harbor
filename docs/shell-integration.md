@@ -91,6 +91,11 @@ printf "\033]7;file://HOSTNAME/CURRENT/DIR\033\\"
 a new tab will use the current working directory of the current tab,
 so that you don't have to manually change the directory**.
 
+Terminal Harbor also uses this value for the directory basename shown in each
+workspace sidebar row. The active tab's active pane is used; if OSC 7 or local
+process inspection does not provide a CWD, the persisted workspace root is
+shown as a fallback. See [Terminal Harbor sidebar maintenance](harbor-sidebar.md).
+
 If you are on a modern Fedora installation, the defaults for bash and
 zsh source a `vte.sh` script that configures the shell to emit this
 sequence.  On other systems you will likely need to configure this

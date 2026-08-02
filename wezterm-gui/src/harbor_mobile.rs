@@ -3,7 +3,6 @@
 use crate::harbor_workspace::{self, WorkspaceActivity};
 use crate::termwindow::TermWindowNotif;
 use anyhow::{anyhow, Context};
-use window::WindowOps;
 use mux::Mux;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -17,6 +16,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+use wezterm_term::{KeyCode, KeyModifiers};
+use window::WindowOps;
 
 pub const DEFAULT_PORT: u16 = 7780;
 const PAIR_TOKEN_TTL: Duration = Duration::from_secs(5 * 60);
@@ -316,6 +317,32 @@ fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
     })
 }
 
+fn host_name() -> String {
+    hostname::get()
+        .ok()
+        .and_then(|name| name.into_string().ok())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "terminal-harbor".into())
+}
+
+#[cfg(target_os = "macos")]
+fn device_name() -> String {
+    std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(host_name)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn device_name() -> String {
+    host_name()
+}
+
 fn dispatch(method: &str, path: &str, authorization: &str, body: &[u8]) -> (u16, String) {
     if method == "OPTIONS" {
         return (200, String::new());
@@ -339,10 +366,8 @@ fn dispatch(method: &str, path: &str, authorization: &str, body: &[u8]) -> (u16,
             serde_json::json!({
                 "ok": true,
                 "version": API_VERSION,
-                "host_name": hostname::get()
-                    .ok()
-                    .and_then(|h| h.into_string().ok())
-                    .unwrap_or_else(|| "terminal-harbor".into()),
+                "device_name": device_name(),
+                "host_name": host_name(),
             })
             .to_string(),
         );
@@ -597,11 +622,10 @@ fn send_instruction(id: &str, text: &str, submit: bool) -> anyhow::Result<()> {
         pane.send_paste(text)?;
     }
     if submit {
-        // Enter must be a real key event: a CR embedded in a bracketed paste
-        // is inserted literally and never executes the line.
-        let mut writer = pane.writer();
-        writer.write_all(b"\r")?;
-        writer.flush()?;
+        // Let the terminal encode Enter for its current keyboard mode. Writing
+        // a fixed CR bypasses CSI-u/Kitty keyboard encoding and can therefore
+        // be ignored by applications that enabled an extended key protocol.
+        pane.key_down(KeyCode::Enter, KeyModifiers::NONE)?;
     }
     Ok(())
 }
@@ -714,6 +738,12 @@ pub fn current_pair_uri() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_names_are_non_empty() {
+        assert!(!device_name().is_empty());
+        assert!(!host_name().is_empty());
+    }
 
     #[test]
     fn pair_qr_png_is_written_and_decodable_shape() {

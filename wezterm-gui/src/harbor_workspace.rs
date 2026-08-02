@@ -80,6 +80,7 @@ impl WorkspaceActivity {
 pub struct HarborWorkspaceRow {
     pub workspace: HarborWorkspace,
     pub activity: WorkspaceActivity,
+    pub directory: String,
     pub process: Option<String>,
     pub message: Option<String>,
     pub selected: bool,
@@ -175,6 +176,43 @@ fn save(registry: &WorkspaceRegistry) -> anyhow::Result<()> {
 fn pane_root(pane: &std::sync::Arc<dyn mux::pane::Pane>) -> Option<PathBuf> {
     pane.get_current_working_dir(CachePolicy::AllowStale)
         .and_then(|url| url.to_file_path().ok())
+}
+
+fn directory_name(path: &Path) -> Option<String> {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            let name = path.display().to_string();
+            (path.has_root() && path.parent().is_none() && !name.is_empty()).then_some(name)
+        })
+}
+
+fn pane_directory_name(pane: &std::sync::Arc<dyn mux::pane::Pane>) -> Option<String> {
+    // Sidebar layouts are cached, so accepting a stale process-inspected CWD here
+    // can leave the old directory visible indefinitely when OSC 7 isn't available.
+    let cwd = pane.get_current_working_dir(CachePolicy::FetchImmediate)?;
+    cwd.to_file_path()
+        .ok()
+        .and_then(|path| directory_name(&path))
+        .or_else(|| {
+            cwd.path_segments()
+                .and_then(|segments| segments.filter(|part| !part.is_empty()).last())
+                .map(str::to_string)
+        })
+}
+
+fn active_directory_for_workspace(mux: &Mux, workspace: &HarborWorkspace) -> String {
+    let active = mux
+        .iter_windows_in_workspace(&workspace.mux_workspace)
+        .into_iter()
+        .next()
+        .and_then(|window_id| mux.get_active_tab_for_window(window_id))
+        .and_then(|tab| tab.get_active_pane())
+        .and_then(|pane| pane_directory_name(&pane));
+    active
+        .or_else(|| workspace.root.as_deref().and_then(directory_name))
+        .unwrap_or_else(|| "Session workspace".to_string())
 }
 
 fn root_for_workspace(mux: &Mux, workspace: &str) -> Option<PathBuf> {
@@ -388,6 +426,7 @@ pub fn rows() -> Vec<HarborWorkspaceRow> {
         .into_iter()
         .map(|workspace| {
             let mut activity = WorkspaceActivity::Idle;
+            let directory = active_directory_for_workspace(&mux, &workspace);
             let mut process = None;
             let mut message = None;
             for window_id in mux.iter_windows_in_workspace(&workspace.mux_workspace) {
@@ -429,6 +468,7 @@ pub fn rows() -> Vec<HarborWorkspaceRow> {
                 selected: workspace.mux_workspace == active,
                 workspace,
                 activity,
+                directory,
                 process,
                 message,
             }
@@ -491,5 +531,18 @@ mod tests {
         assert_eq!(relative_index(0, -1, 3), 2);
         assert_eq!(relative_index(2, 1, 3), 0);
         assert_eq!(relative_index(1, 1, 3), 2);
+    }
+
+    #[test]
+    fn directory_name_uses_only_the_final_component() {
+        assert_eq!(
+            directory_name(Path::new("/Users/example/projects/terminal-harbor")),
+            Some("terminal-harbor".to_string())
+        );
+        assert_eq!(
+            directory_name(Path::new("/Users/example/日本語/")),
+            Some("日本語".to_string())
+        );
+        assert_eq!(directory_name(Path::new("/")), Some("/".to_string()));
     }
 }

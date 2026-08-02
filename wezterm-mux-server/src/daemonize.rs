@@ -36,8 +36,13 @@ fn setsid() -> anyhow::Result<()> {
     }
 }
 
-fn lock_pid_file(config: &config::ConfigHandle) -> anyhow::Result<std::fs::File> {
-    let pid_file = config.daemon_options.pid_file();
+fn lock_pid_file(
+    config: &config::ConfigHandle,
+    pid_file_override: Option<&std::path::Path>,
+) -> anyhow::Result<std::fs::File> {
+    let pid_file = pid_file_override
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| config.daemon_options.pid_file());
     let pid_file_dir = pid_file
         .parent()
         .ok_or_else(|| anyhow::anyhow!("{} has no parent?", pid_file.display()))?;
@@ -64,7 +69,10 @@ fn lock_pid_file(config: &config::ConfigHandle) -> anyhow::Result<std::fs::File>
     Ok(file)
 }
 
-pub fn daemonize(config: &config::ConfigHandle) -> anyhow::Result<Option<RawFd>> {
+pub fn daemonize(
+    config: &config::ConfigHandle,
+    pid_file_override: Option<&std::path::Path>,
+) -> anyhow::Result<Option<RawFd>> {
     let pid_file = if !config::running_under_wsl() {
         // pid file locking is only partly functional when running under
         // WSL 1; it is possible for the pid file to exist after a reboot
@@ -72,7 +80,7 @@ pub fn daemonize(config: &config::ConfigHandle) -> anyhow::Result<Option<RawFd>>
         // other processes that might possibly hold a lock on it.
         // So, we only use a pid file when not under WSL.
 
-        Some(lock_pid_file(config)?)
+        Some(lock_pid_file(config, pid_file_override)?)
     } else {
         None
     };

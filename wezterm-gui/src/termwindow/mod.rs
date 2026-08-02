@@ -1254,13 +1254,20 @@ impl TermWindow {
                 | MuxNotification::Alert {
                     alert:
                         Alert::OutputSinceFocusLost
-                        | Alert::CurrentWorkingDirectoryChanged
                         | Alert::WindowTitleChanged(_)
                         | Alert::TabTitleChanged(_)
                         | Alert::IconTitleChanged(_)
                         | Alert::Progress(_),
                     ..
                 } => {
+                    self.update_title();
+                }
+                MuxNotification::Alert {
+                    alert: Alert::CurrentWorkingDirectoryChanged,
+                    ..
+                } => {
+                    self.invalidate_harbor_sidebar();
+                    window.invalidate();
                     self.update_title();
                 }
                 MuxNotification::Alert {
@@ -1334,6 +1341,7 @@ impl TermWindow {
                     self.mux_pane_output_event(pane_id);
                 }
                 MuxNotification::WindowInvalidated(_) => {
+                    self.invalidate_harbor_sidebar();
                     window.invalidate();
                     self.update_title_post_status();
                 }
@@ -1348,6 +1356,8 @@ impl TermWindow {
                 }
                 MuxNotification::PaneFocused(_) => {
                     // Also handled by clientpane
+                    self.invalidate_harbor_sidebar();
+                    window.invalidate();
                     self.update_title_post_status();
                 }
                 MuxNotification::TabResized(_) => {
@@ -2837,6 +2847,8 @@ impl TermWindow {
             CloseCurrentPane { confirm } => self.close_current_pane(*confirm),
             Nop | DisableDefaultAssignment => {}
             ReloadConfiguration => config::reload(),
+            RestartApplication => crate::harbor_restart::restart_application(false)?,
+            RestartApplicationFull => crate::harbor_restart::restart_application(true)?,
             MoveTab(n) => self.move_tab(*n)?,
             MoveTabRelative(n) => self.move_tab_relative(*n)?,
             ScrollByPage(n) => self.scroll_by_page(**n, pane)?,
@@ -2870,6 +2882,7 @@ impl TermWindow {
 
                 match config.window_close_confirmation {
                     WindowCloseConfirmation::NeverPrompt => {
+                        crate::harbor_restart::shutdown_session_host();
                         let con = Connection::get().expect("call on gui thread");
                         con.terminate_message_loop();
                     }

@@ -288,10 +288,21 @@ impl GuiFrontEnd {
                 }
 
                 match action {
+                    KeyAssignment::RestartApplication => {
+                        if let Err(err) = crate::harbor_restart::restart_application(false) {
+                            log::error!("restarting Terminal Harbor: {err:#}");
+                        }
+                    }
+                    KeyAssignment::RestartApplicationFull => {
+                        if let Err(err) = crate::harbor_restart::restart_application(true) {
+                            log::error!("completely restarting Terminal Harbor: {err:#}");
+                        }
+                    }
                     KeyAssignment::QuitApplication => {
                         // If we get here, there are no windows that could have received
                         // the QuitApplication command, therefore it must be ok to quit
                         // immediately
+                        crate::harbor_restart::shutdown_session_host();
                         Connection::get().unwrap().terminate_message_loop();
                     }
                     KeyAssignment::SpawnWindow => {

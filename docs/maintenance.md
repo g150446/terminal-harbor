@@ -1,0 +1,187 @@
+# Terminal Harbor 保守運用ガイド
+
+この文書は、Terminal Harbor のビルド、配布、再起動、障害切り分け、
+ロールバックに必要な情報をまとめた保守担当者向けランブックです。
+ユーザー向けの再起動方法と設計上の制約は
+[`restarting.md`](restarting.md)、サイドバーの表示仕様は
+[`harbor-sidebar.md`](harbor-sidebar.md)も参照してください。
+
+## プロセス構成
+
+通常起動では、次のプロセスが別々に動作します。
+
+| プロセス | 役割 | 保持再起動時 |
+| --- | --- | --- |
+| `wezterm-gui` | ウィンドウ、メニュー、サイドバー、描画 | 終了して新バイナリで再起動 |
+| `wezterm-mux-server` | ペイン、PTY、シェル、Codexなどの子プロセス | 継続 |
+| `wezterm` | CLIと再起動ヘルパー | 要求ごとに短時間実行 |
+
+専用muxドメイン名は `terminal-harbor` です。ランタイムディレクトリには
+次のファイルが作られます。macOSでランタイムディレクトリを取得できない場合、
+既定値は `~/.local/share/wezterm` です。
+
+| ファイル | 用途 |
+| --- | --- |
+| `terminal-harbor-mux.sock` | GUIと永続mux間のUnixソケット |
+| `terminal-harbor-mux.pid` | 永続muxのPIDとロック |
+| `terminal-harbor-control-<window-class>.sock` | 再起動制御ソケット（モード `0600`） |
+| `log` | muxの標準出力・標準エラーの既定ログ |
+
+PIDファイルの内容を使ってプロセスを終了するコードは、対象の実行ファイル名が
+`wezterm-mux-server` であることを確認します。運用時もPIDだけを信用して別の
+プロセスへシグナルを送らないでください。
+
+## 再起動の選択
+
+| 変更または状況 | 使用する操作 |
+| --- | --- |
+| GUI、メニュー、描画、サイドバーのみの変更 | `wezterm restart` |
+| 作業中のシェルやCodexを維持したい | `wezterm restart` |
+| mux、PTY、プロセス検出、mux起動環境の変更 | `wezterm restart --full` |
+| muxとのプロトコル互換性がない | `wezterm restart --full` |
+| 永続mux導入前の版から初めて更新する | 完全終了後に新しい版を起動 |
+| 状態不整合やメモリリークを疑う | `wezterm restart --full` |
+
+アプリメニューでは **Restart Terminal Harbor (Keep Sessions)** と
+**Restart Terminal Harbor Completely** が同じ操作に対応します。確認画面は
+表示されません。完全再起動はすべてのターミナルセッションを終了するため、
+未保存の作業がないことを先に確認してください。
+
+保持再起動ではGUIだけが更新されます。mux、PTY、シェル、Codex、環境変数、
+開いているファイル、メモリ上の状態は古いプロセスに残ります。このため
+コンテキストを維持できる一方、バックエンド修正の未反映や古い不具合・資源使用も
+維持されます。CLIは再起動要求の前とGUI側の実行直前にmux互換性を検査し、
+安全に再接続できない場合は保持再起動を拒否します。
+
+## ビルド前の確認
+
+リポジトリルートで次を実行します。
+
+```sh
+git status --short --branch
+cargo +stable check -p wezterm-gui -p wezterm -p wezterm-mux-server
+cargo +stable test -p wezterm-gui-subcommands harbor_tests
+cargo +stable test -p wezterm harbor_restart::tests
+cargo +stable test -p wezterm-gui harbor_restart::tests
+cargo +stable test -p wezterm-gui harbor
+git diff --check
+cargo +stable build --release
+```
+
+`cargo fmt --all --check` も実行します。ただし、上流由来または作業中の既存差分が
+ある場合は、今回触れていないファイルを機械的に整形して同じコミットへ混ぜないで
+ください。警告とエラーを区別し、将来互換警告は依存クレート名と内容を記録します。
+
+## macOSリリースバンドル
+
+配布物は `assets/macos/Terminal Harbor.app` を雛形にし、次を含めます。
+
+- `Contents/MacOS/wezterm-gui`
+- `Contents/MacOS/wezterm`
+- `Contents/MacOS/wezterm-mux-server`
+- `Contents/MacOS/strip-ansi-escapes`
+- `Contents/Resources/wezterm.sh`
+- `Contents/Resources/shell-completion/`
+- `Contents/Resources/terminfo/`
+
+バンドル作成後は、開発配布なら `codesign --force --deep --sign -`、正式配布なら
+適切なDeveloper IDとentitlementsを使って署名し、次を必ず確認します。
+
+```sh
+codesign --verify --deep --strict --verbose=2 "/path/to/Terminal Harbor.app"
+"/path/to/Terminal Harbor.app/Contents/MacOS/wezterm" restart --help
+```
+
+実行中のアプリを更新する場合は、まず新しいバンドルを一時ディレクトリに完成させ、
+署名検証後に `/Applications/Terminal Harbor.app` と入れ替えます。旧バンドルは
+ロールバックが完了するまで `/private/tmp` などへ退避してください。バンドル内の
+ファイルを実行中に個別上書きする方法は、版が混在するため使用しません。
+
+入れ替え直後に保持再起動を使えるのは、実行中muxと新GUIに互換性がある場合だけ
+です。永続mux導入前の版、muxプロトコル変更、またはmuxサーバー自身の修正を含む
+リリースでは、完全再起動をリリース手順に明記します。
+
+## リリース後の受け入れ確認
+
+保持再起動では、再起動前後のGUI PIDが変わり、mux PID、ペインID、TTYが同じで
+あることを確認します。完全再起動ではGUI PIDとmux PIDが両方変わり、以前の
+セッションが残っていないことを確認します。
+
+```sh
+pgrep -fl 'wezterm-gui|wezterm-mux-server'
+wezterm cli list --format json
+wezterm restart
+wezterm restart --full
+```
+
+加えて次の手動確認を行います。
+
+1. シェルで `cd` した後、プロンプト表示時にサイドバーのディレクトリ名が変わる。
+2. タブ・分割ペインを切り替えると、選択中ペインのディレクトリ名になる。
+3. 保持再起動後もシェル、Codex、スクロールバックが継続する。
+4. 完全再起動後に新しいシェルを正常に作成できる。
+5. モバイルブリッジを使用する構成では、ポート `7780` の競合がなく再接続できる。
+
+## 障害切り分け
+
+### `wezterm restart` がGUIへ接続できない
+
+- Terminal Harborが起動中か確認します。
+- CLIとGUIが同じアプリバンドル由来か確認します。
+- `--class` を指定して起動したGUIには、同じ値で
+  `wezterm restart --class <class>` を実行します。
+- 制御ソケットがない場合、旧版GUI、起動失敗、またはwindow class不一致を疑います。
+
+### mux互換性エラーで保持再起動できない
+
+これはセッション破損を避けるための正常な拒否です。作業を保存して
+`wezterm restart --full` を実行します。互換性検査を無効化したり、別バージョンの
+CLIから制御ソケットへ直接JSONを書き込んだりしないでください。
+
+### 再起動要求は受理されたがGUIが戻らない
+
+1. `pgrep -fl 'wezterm-gui|wezterm-mux-server'` でプロセスを確認します。
+2. ランタイムディレクトリの `log` を確認します。
+3. インストール済みバンドル内に3つのweztermバイナリが揃っているか確認します。
+4. 署名を `codesign --verify --deep --strict --verbose=2` で再検証します。
+5. muxが残っている場合は、同じバージョンのGUIを通常起動して再接続を試します。
+
+ソケットやPIDファイルは実プロセスと対応している可能性があります。最初の対処として
+削除しないでください。プロセスが存在しないことを確認できた場合に限り、古いソケット
+を退避して通常起動します。GUIの制御ソケットは起動時に安全に作り直されます。
+
+### サイドバーのディレクトリが更新されない
+
+OSC 7の通知、`wezterm cli list` が返すCWD、選択中タブ・ペイン、サイドバーキャッシュ
+無効化の順に確認します。詳細な取得優先順位とテスト項目は
+[`harbor-sidebar.md`](harbor-sidebar.md)を参照してください。
+
+## ロールバック
+
+1. 作業中の内容を保存し、完全終了します。
+2. 問題のあるアプリバンドルを別名で退避します。
+3. 直前に動作確認済みのバンドルを `/Applications/Terminal Harbor.app` へ戻します。
+4. 署名を検証して起動します。
+5. 新版muxが起動済みだった場合は、旧GUIとの互換性を仮定せず完全再起動します。
+
+保持再起動中のセッションはバイナリより長く生存します。そのため、ロールバックでも
+GUIだけを戻せば安全とは限りません。muxまたはプロトコルに関係する障害では、
+セッション維持より整合性を優先してください。
+
+## コード責任範囲
+
+| ファイル | 責任 |
+| --- | --- |
+| `wezterm-gui/src/harbor_restart.rs` | GUI側制御ソケット、再起動準備、通常終了時のmux停止 |
+| `wezterm/src/harbor_restart.rs` | CLI、互換性検査、再起動ヘルパー、完全再起動 |
+| `wezterm-gui-subcommands/src/lib.rs` | ソケット・PIDパスとドメイン名 |
+| `wezterm-gui/src/main.rs` | 永続muxドメインの登録と制御サーバー起動 |
+| `wezterm-mux-server/src/main.rs` | Terminal Harbor専用セッションホスト |
+| `wezterm-mux-server/src/daemonize.rs` | 専用PIDファイルとdaemon化 |
+| `wezterm-gui/src/commands.rs` | メニューとコマンドパレット項目 |
+| `config/src/keyassignment.rs` | Luaキーアクション |
+
+再起動プロトコルはローカルUnixソケット上の1行JSONで、現在のバージョンは `1` です。
+フィールドは `version`、`command: "restart"`、`full` です。プロトコルを変更するときは
+CLIとGUIを同時に更新し、旧muxとの互換性、エラー応答、ソケット権限のテストを追加して
+ください。

@@ -1268,6 +1268,22 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &["Terminal Harbor"],
             icon: Some("md_reload"),
         },
+        RestartApplication => CommandDef {
+            brief: "Restart Terminal Harbor (Keep Sessions)".into(),
+            doc: "Restarts the Terminal Harbor GUI while keeping terminal sessions running".into(),
+            keys: vec![],
+            args: &[],
+            menubar: &["Terminal Harbor"],
+            icon: Some("md_restart"),
+        },
+        RestartApplicationFull => CommandDef {
+            brief: "Restart Terminal Harbor Completely".into(),
+            doc: "Restarts Terminal Harbor and terminates all terminal sessions".into(),
+            keys: vec![],
+            args: &[],
+            menubar: &["Terminal Harbor"],
+            icon: Some("md_restart_alert"),
+        },
         QuitApplication => CommandDef {
             brief: "Quit Terminal Harbor".into(),
             doc: "Quits Terminal Harbor".into(),
@@ -2069,6 +2085,8 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
     return vec![
         // ----------------- WezTerm
         ReloadConfiguration,
+        RestartApplication,
+        RestartApplicationFull,
         #[cfg(target_os = "macos")]
         HideApplication,
         #[cfg(target_os = "macos")]

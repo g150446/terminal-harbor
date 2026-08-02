@@ -11,7 +11,7 @@ The companion app lives in the separate repository
 ┌────────────────────────────┐
 │ terminal-harbor-mobile     │  Flutter (Android / iOS)
 │  - QR scan / manual URI    │
-│  - secure device token     │
+│  - multiple secure pairings│
 │  - screen mirror (1s poll) │
 │  - instruction input       │
 └─────────────┬──────────────┘
@@ -44,6 +44,13 @@ binary mux protocol — keep it that way so the app stays simple and portable.
    (persisted in `state_dir()/mobile-devices.json`).
 4. All other endpoints require `Authorization: Bearer <device_token>`.
 
+The mobile app stores multiple bridge URLs and tokens in its platform secure
+storage. It lists those local records without calling the bridge at startup;
+`/v1/session` is called only after the user selects a desktop.
+
+Both the mobile secure-storage value and desktop `mobile-devices.json` contain
+bearer tokens. Do not print either file in logs or attach it to bug reports.
+
 `state_dir()` = `dirs_next::data_dir()/terminal-harbor`
 (macOS: `~/Library/Application Support/terminal-harbor`).
 
@@ -61,16 +68,41 @@ Full contract: `openapi/harbor-mobile.yaml` in the mobile repo.
 | Method | Path | Notes |
 |---|---|---|
 | POST | `/v1/pair` | No auth. One-time token → device token |
-| GET | `/v1/session` | Connection check |
+| GET | `/v1/session` | Connection check plus desktop identity metadata |
 | GET | `/v1/workspaces` | Workspace list with activity state |
 | POST | `/v1/workspaces/{id}/activate` | Switch active workspace |
 | POST | `/v1/workspaces/{id}/instruction` | Body `{text, submit=true}` |
 | GET | `/v1/workspaces/{id}/screen?lines=N` | Plain-text screen mirror, N=1..200, default 60 |
 
+### Session identity and compatibility
+
+`GET /v1/session` returns:
+
+```json
+{
+  "ok": true,
+  "version": "1.0.0",
+  "device_name": "Kazami’s MacBook Air",
+  "host_name": "kazami-macbook-air.local"
+}
+```
+
+On macOS, `device_name` is read from
+`/usr/sbin/scutil --get ComputerName`; an empty value or command failure falls
+back to `host_name`. Other platforms also use `host_name` as the device name.
+Keep `host_name` stable and treat new metadata fields as additive: mobile
+clients intentionally accept an older response with no `device_name`.
+
+The mobile list uses the computer name as its primary label and host name as
+its secondary label. Existing pairings acquire these values the next time the
+user selects them; no background discovery is performed.
+
 ### Instruction + Enter semantics (important)
 
 `submit: true` sends the text via `pane.send_paste()` and then **Enter as a
-real key event** via `pane.writer().write_all(b"\r")`.
+real key event** via `pane.key_down(KeyCode::Enter, KeyModifiers::NONE)`.
+This lets the terminal encode Enter for the active keyboard protocol; a fixed
+CR can be ignored when an application has enabled CSI-u/Kitty key encoding.
 
 Do **not** append `\r` to the pasted payload: shells and AI agents with
 bracketed-paste mode treat a CR inside a paste as a literal insertion and
@@ -115,7 +147,7 @@ then `window.set_window_position(ScreenPoint)` is applied post-creation.
 
 | File | Role |
 |---|---|
-| `wezterm-gui/src/harbor_mobile.rs` | Bridge server, pairing, endpoints, QR PNG |
+| `wezterm-gui/src/harbor_mobile.rs` | Bridge server, token persistence, identity metadata, endpoints, and QR PNG |
 | `wezterm-gui/src/termwindow/harbor_sidebar.rs` | Pairing panel UI (buttons: Open QR / Copy URI / New QR) |
 | `wezterm-gui/src/termwindow/mouseevent.rs` | `UIItemType` handlers; toggle-on also opens QR + copies URI |
 | `wezterm-gui/src/termwindow/mod.rs` | `UIItemType` variants; window centering in `new_window` |
@@ -135,7 +167,7 @@ then `window.set_window_position(ScreenPoint)` is applied post-creation.
   QR `render::<Luma<u8>>()` step, while saving uses `image::save_buffer`
   (0.25 API: `impl Into<ExtendedColorType>`).
 - Verify with: `cargo check -p wezterm-gui && cargo test -p wezterm-gui harbor`
-  (includes a unit test that the QR PNG is written and decodable).
+  (includes tests for non-empty session names and a decodable QR PNG).
 
 ## Mobile app essentials (see mobile repo `docs/development.md`)
 
@@ -152,5 +184,9 @@ then `window.set_window_position(ScreenPoint)` is applied post-creation.
   the app but not pinned/verified. LAN-only trust model for now.
 - Screen mirror is plain text (no colors/styles) and polling-based, not
   streamed; it targets the **active pane** of the workspace only.
-- Device management: tokens never expire and there is no UI to revoke them.
+- The mobile app can remove an individual local pairing, but this does not
+  revoke or delete the corresponding record in desktop
+  `state_dir()/mobile-devices.json`. Tokens do not expire and there is no
+  server-side revoke UI/API yet. Treat clearing desktop state as an explicit
+  administrative operation because it invalidates paired clients.
 - iOS: same codebase, not yet tested on device/simulator.

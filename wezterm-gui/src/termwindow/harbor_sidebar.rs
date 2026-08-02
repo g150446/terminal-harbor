@@ -62,6 +62,19 @@ fn wrap_sidebar_lines(text: &str, max_cols: usize) -> Vec<String> {
     lines
 }
 
+fn workspace_detail(directory: &str, process: Option<&str>, message: Option<&str>) -> String {
+    let mut detail = format!("  {directory}");
+    if let Some(process) = process.filter(|value| !value.is_empty()) {
+        detail.push_str(" · ");
+        detail.push_str(process);
+    }
+    if let Some(message) = message.filter(|value| !value.is_empty()) {
+        detail.push_str("\n  ");
+        detail.push_str(message);
+    }
+    detail
+}
+
 /// box_model Text is single-line; multi-line content must be Children of Text rows.
 fn wrapped_text_element(
     font: &std::rc::Rc<wezterm_font::LoadedFont>,
@@ -71,9 +84,12 @@ fn wrapped_text_element(
 ) -> Element {
     let lines = wrap_sidebar_lines(text, max_cols);
     if lines.len() == 1 {
-        return Element::new(font, ElementContent::Text(lines.into_iter().next().unwrap()))
-            .display(DisplayType::Block)
-            .colors(colors);
+        return Element::new(
+            font,
+            ElementContent::Text(lines.into_iter().next().unwrap()),
+        )
+        .display(DisplayType::Block)
+        .colors(colors);
     }
     let kids: Vec<_> = lines
         .into_iter()
@@ -317,17 +333,11 @@ impl crate::TermWindow {
         }
 
         for row in harbor_workspace::rows() {
-            let location = row
-                .workspace
-                .root
-                .as_ref()
-                .map(|root| root.display().to_string())
-                .unwrap_or_else(|| "Session workspace".to_string());
-            let detail = match (row.process.as_deref(), row.message.as_deref()) {
-                (_, Some(message)) if !message.is_empty() => format!("  {message}"),
-                (Some(process), _) => format!("  {location} · {process}"),
-                _ => format!("  {location}"),
-            };
+            let detail = workspace_detail(
+                &row.directory,
+                row.process.as_deref(),
+                row.message.as_deref(),
+            );
             let (colors, hover) = Self::sidebar_colors(row.selected);
             let title = wrapped_text_element(
                 &font,
@@ -472,7 +482,7 @@ impl crate::TermWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::wrap_sidebar_lines;
+    use super::{workspace_detail, wrap_sidebar_lines};
 
     #[test]
     fn wraps_long_uri_without_spaces() {
@@ -488,5 +498,22 @@ mod tests {
     fn preserves_explicit_newlines() {
         let text = "line one\nline two";
         assert_eq!(wrap_sidebar_lines(text, 80), vec!["line one", "line two"]);
+    }
+
+    #[test]
+    fn detail_always_includes_directory() {
+        assert_eq!(workspace_detail("project", None, None), "  project");
+        assert_eq!(
+            workspace_detail("project", Some("codex"), None),
+            "  project · codex"
+        );
+        assert_eq!(
+            workspace_detail("project", Some("codex"), Some("Running tests")),
+            "  project · codex\n  Running tests"
+        );
+        assert_eq!(
+            workspace_detail("project", None, Some("Waiting")),
+            "  project\n  Waiting"
+        );
     }
 }

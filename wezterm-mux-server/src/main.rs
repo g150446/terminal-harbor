@@ -47,6 +47,10 @@ struct Opt {
     #[arg(long = "daemonize")]
     daemonize: bool,
 
+    /// Run the built-in Terminal Harbor persistent session host.
+    #[arg(long, hide = true)]
+    harbor_session_host: bool,
+
     /// Specify the current working directory for the initially
     /// spawned program
     #[arg(long = "cwd", value_parser, value_hint=ValueHint::DirPath)]
@@ -109,7 +113,10 @@ fn run() -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         if opts.daemonize {
-            pid_file = daemonize::daemonize(&config)?;
+            let pid_override = opts
+                .harbor_session_host
+                .then(wezterm_gui_subcommands::harbor_mux_pid_path);
+            pid_file = daemonize::daemonize(&config, pid_override.as_deref())?;
             // When we reach this line, we are in a forked child process,
             // and the fork will have broken the async-io/reactor state
             // of the smol runtime.
@@ -145,6 +152,9 @@ fn run() -> anyhow::Result<()> {
         for (name, value) in &opts.config_override {
             cmd.arg("--config");
             cmd.arg(&format!("{name}={value}"));
+        }
+        if opts.harbor_session_host {
+            cmd.arg("--harbor-session-host");
         }
         if let Some(cwd) = opts.cwd {
             cmd.arg("--cwd");
@@ -230,7 +240,7 @@ fn run() -> anyhow::Result<()> {
 
     let executor = promise::spawn::SimpleExecutor::new();
 
-    spawn_listener().map_err(|e| {
+    spawn_listener(opts.harbor_session_host).map_err(|e| {
         log::error!("problem spawning listeners: {:?}", e);
         e
     })?;
@@ -307,7 +317,19 @@ fn terminate_with_error(err: anyhow::Error) -> ! {
 
 mod ossl;
 
-pub fn spawn_listener() -> anyhow::Result<()> {
+pub fn spawn_listener(harbor_session_host: bool) -> anyhow::Result<()> {
+    if harbor_session_host {
+        let unix_dom = config::UnixDomain {
+            name: wezterm_gui_subcommands::HARBOR_PERSISTENT_DOMAIN.to_string(),
+            socket_path: Some(wezterm_gui_subcommands::harbor_mux_socket_path()),
+            no_serve_automatically: true,
+            ..Default::default()
+        };
+        std::env::set_var("WEZTERM_UNIX_SOCKET", unix_dom.socket_path());
+        let mut listener = wezterm_mux_server_impl::local::LocalListener::with_domain(&unix_dom)?;
+        thread::spawn(move || listener.run());
+        return Ok(());
+    }
     let config = configuration();
     for unix_dom in &config.unix_domains {
         std::env::set_var("WEZTERM_UNIX_SOCKET", unix_dom.socket_path());

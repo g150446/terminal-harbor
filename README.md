@@ -9,6 +9,12 @@ compatibility come from [WezTerm](https://github.com/wez/wezterm). The
 workspace experience is implemented independently in this repository; no cmux
 source code, artwork, or other GPL-covered implementation is included.
 
+AI agents can apply a freshly built GUI without terminating their own terminal
+session by running `wezterm restart`. Use `wezterm restart --full` when mux or
+PTY changes also need to be loaded; see [Restarting Terminal Harbor](docs/restarting.md).
+Build, deployment, troubleshooting, and rollback procedures are documented in
+the [Terminal Harbor maintenance runbook](docs/maintenance.md).
+
 ## ワークスペースの使い方
 
 Terminal Harborを初めて起動すると、現在のターミナルセッションが最初の
@@ -63,6 +69,15 @@ cd /Users/example/projects/my-app
 タブが2個以上ある場合は従来どおり現在のタブだけを閉じます。
 
 サイドバーを非表示にしてもワークスペースや実行中のプロセスは削除されません。
+
+各ワークスペースの詳細行には、現在のアクティブタブ内で選択されているペインの
+カレントディレクトリ名が表示されます。フルパスではなく末尾名だけを表示し、
+AIエージェント実行中は `directory · agent`、ステータスメッセージがある場合は
+その下の行にメッセージを表示します。エージェント未実行時もディレクトリ名は
+表示されます。正確に `cd` へ追従させるには、シェルがOSC 7を通知する必要が
+あります（標準のTerminal Harborシェル統合で有効になります）。
+実装上の取得順、フォールバック、更新通知、障害切り分けは
+[`docs/harbor-sidebar.md`](docs/harbor-sidebar.md)を参照してください。
 
 ## Workspace status protocol
 

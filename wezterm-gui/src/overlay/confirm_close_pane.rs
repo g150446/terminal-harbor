@@ -98,6 +98,7 @@ pub fn confirm_quit_program(
     if confirm::run_confirmation("🛑 Really Quit Terminal Harbor?", &mut term)? {
         promise::spawn::spawn_into_main_thread(async move {
             use ::window::{Connection, ConnectionOps};
+            crate::harbor_restart::shutdown_session_host();
             let con = Connection::get().expect("call on gui thread");
             con.terminate_message_loop();
         })

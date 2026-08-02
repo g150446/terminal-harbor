@@ -72,6 +72,7 @@ ordered-float.workspace = true
 parking_lot.workspace = true
 portable-pty = { workspace=true, features = ["serde_support"]}
 promise.workspace = true
+procinfo.workspace = true
 qrcode.workspace = true
 rangeset.workspace = true
 hostname.workspace = true

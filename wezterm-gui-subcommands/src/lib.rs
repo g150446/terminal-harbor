@@ -5,6 +5,46 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 pub const DEFAULT_WINDOW_CLASS: &str = "org.wezfurlong.wezterm";
+pub const HARBOR_PERSISTENT_DOMAIN: &str = "terminal-harbor";
+
+pub fn harbor_mux_socket_path() -> PathBuf {
+    config::RUNTIME_DIR.join("terminal-harbor-mux.sock")
+}
+
+pub fn harbor_mux_pid_path() -> PathBuf {
+    config::RUNTIME_DIR.join("terminal-harbor-mux.pid")
+}
+
+pub fn harbor_control_socket_path(window_class: &str) -> PathBuf {
+    let class = window_class
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>();
+    config::RUNTIME_DIR.join(format!("terminal-harbor-control-{class}.sock"))
+}
+
+#[cfg(test)]
+mod harbor_tests {
+    use super::*;
+
+    #[test]
+    fn control_socket_class_is_path_safe() {
+        let path = harbor_control_socket_path("org.example/Test App");
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("terminal-harbor-control-org-example-Test-App.sock")
+        );
+    }
+
+    #[test]
+    fn persistent_paths_do_not_overlap() {
+        assert_ne!(harbor_mux_socket_path(), harbor_mux_pid_path());
+        assert_ne!(
+            harbor_mux_socket_path(),
+            harbor_control_socket_path(DEFAULT_WINDOW_CLASS)
+        );
+    }
+}
 
 /// Helper for parsing config overrides
 pub fn name_equals_value(arg: &str) -> Result<(String, String), String> {

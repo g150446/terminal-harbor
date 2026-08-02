@@ -41,6 +41,7 @@ mod download;
 mod frontend;
 mod glyphcache;
 mod harbor_mobile;
+mod harbor_restart;
 mod harbor_settings;
 mod harbor_workspace;
 mod inputmap;
@@ -414,6 +415,7 @@ async fn async_run_terminal_gui(
     opts: StartCommand,
     should_publish: bool,
 ) -> anyhow::Result<()> {
+    crate::harbor_restart::start_control_server(&crate::termwindow::get_window_class())?;
     let unix_socket_path =
         config::RUNTIME_DIR.join(format!("gui-sock-{}", unsafe { libc::getpid() }));
     std::env::set_var("WEZTERM_UNIX_SOCKET", unix_socket_path.clone());
@@ -505,7 +507,9 @@ enum Publish {
 
 impl Publish {
     pub fn resolve(mux: &Arc<Mux>, config: &ConfigHandle, always_new_process: bool) -> Self {
-        if mux.default_domain().domain_name() != config.default_domain.as_deref().unwrap_or("local")
+        let default_domain = mux.default_domain();
+        if default_domain.domain_name() != config.default_domain.as_deref().unwrap_or("local")
+            && default_domain.domain_name() != wezterm_gui_subcommands::HARBOR_PERSISTENT_DOMAIN
         {
             return Self::NoConnectNoPublish;
         }
@@ -721,6 +725,40 @@ fn build_initial_mux(
     setup_mux(domain, config, default_domain_name, default_workspace_name)
 }
 
+fn install_harbor_persistent_domain(mux: &Arc<Mux>) -> anyhow::Result<()> {
+    use wezterm_gui_subcommands::{harbor_mux_socket_path, HARBOR_PERSISTENT_DOMAIN};
+
+    if let Some(domain) = mux.get_domain_by_name(HARBOR_PERSISTENT_DOMAIN) {
+        mux.set_default_domain(&domain);
+        return Ok(());
+    }
+    let current = std::env::current_exe().context("resolve Terminal Harbor GUI executable")?;
+    let mux_server = current
+        .parent()
+        .context("Terminal Harbor GUI executable has no parent directory")?
+        .join(if cfg!(windows) {
+            "wezterm-mux-server.exe"
+        } else {
+            "wezterm-mux-server"
+        });
+    let unix_domain = config::UnixDomain {
+        name: HARBOR_PERSISTENT_DOMAIN.to_string(),
+        socket_path: Some(harbor_mux_socket_path()),
+        serve_command: Some(vec![
+            mux_server.to_string_lossy().into_owned(),
+            "--daemonize".to_string(),
+            "--harbor-session-host".to_string(),
+        ]),
+        ..Default::default()
+    };
+    let domain: Arc<dyn Domain> = Arc::new(ClientDomain::new(
+        wezterm_client::domain::ClientDomainConfig::Unix(unix_domain),
+    ));
+    mux.add_domain(&domain);
+    mux.set_default_domain(&domain);
+    Ok(())
+}
+
 fn run_terminal_gui(opts: StartCommand, default_domain_name: Option<String>) -> anyhow::Result<()> {
     if let Some(cls) = opts.class.as_ref() {
         crate::set_window_class(cls);
@@ -756,6 +794,9 @@ fn run_terminal_gui(opts: StartCommand, default_domain_name: Option<String>) -> 
         default_domain_name.as_deref(),
         opts.workspace.as_deref(),
     )?;
+    if opts.domain.is_none() {
+        install_harbor_persistent_domain(&mux)?;
+    }
 
     // First, let's see if we can ask an already running wezterm to do this.
     // We must do this before we start the gui frontend as the scheduler

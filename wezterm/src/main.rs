@@ -19,6 +19,7 @@ use wezterm_gui_subcommands::*;
 
 mod asciicast;
 mod cli;
+mod harbor_restart;
 
 //    let message = "; ❤ 😍🤢\n\x1b[91;mw00t\n\x1b[37;104;m bleet\x1b[0;m.";
 
@@ -135,6 +136,15 @@ enum SubCommand {
         about = "Update Terminal Harbor workspace metadata"
     )]
     Workspace(WorkspaceCommand),
+
+    #[command(name = "restart", about = "Restart Terminal Harbor")]
+    Restart(harbor_restart::RestartCommand),
+
+    #[command(name = "_check-harbor-mux", hide = true)]
+    CheckHarborMux,
+
+    #[command(name = "_restart-helper", hide = true)]
+    RestartHelper(harbor_restart::RestartHelperCommand),
 
     #[command(name = "record", about = "Record a terminal session as an asciicast")]
     Record(asciicast::RecordCommand),
@@ -844,6 +854,15 @@ fn run() -> anyhow::Result<()> {
         SubCommand::ImageCat(cmd) => cmd.run(),
         SubCommand::SetCwd(cmd) => cmd.run(),
         SubCommand::Workspace(cmd) => cmd.run(),
+        SubCommand::Restart(cmd) => {
+            init_config(&opts)?;
+            cmd.run()
+        }
+        SubCommand::CheckHarborMux => {
+            init_config(&opts)?;
+            harbor_restart::run_compatibility_check()
+        }
+        SubCommand::RestartHelper(cmd) => cmd.run(),
         SubCommand::Cli(cli) => cli::run_cli(&opts, cli),
         SubCommand::Record(cmd) => cmd.run(init_config(&opts)?),
         SubCommand::Replay(cmd) => cmd.run(),
