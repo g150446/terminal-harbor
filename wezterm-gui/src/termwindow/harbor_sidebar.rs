@@ -1,8 +1,7 @@
-use crate::harbor_mobile;
-use crate::harbor_workspace;
 use crate::termwindow::box_model::*;
 use crate::termwindow::UIItemType;
 use crate::utilsprites::RenderMetrics;
+use crate::{harbor_mobile, harbor_workspace};
 use config::{Dimension, DimensionContext};
 use mux::pane::CachePolicy;
 use mux::Mux;
@@ -281,8 +280,14 @@ impl crate::TermWindow {
                         text: teal.into(),
                     }))
             };
-            children.push(sidebar_link("🖼  Open QR image", UIItemType::HarborOpenPairQr));
-            children.push(sidebar_link("⧉  Copy pair URI", UIItemType::HarborCopyPairUri));
+            children.push(sidebar_link(
+                "🖼  Open QR image",
+                UIItemType::HarborOpenPairQr,
+            ));
+            children.push(sidebar_link(
+                "⧉  Copy pair URI",
+                UIItemType::HarborCopyPairUri,
+            ));
 
             children.push(
                 wrapped_text_element(

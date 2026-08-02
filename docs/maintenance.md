@@ -68,7 +68,9 @@ git diff --check
 cargo +stable build --release
 ```
 
-`cargo fmt --all --check` も実行します。ただし、上流由来または作業中の既存差分が
+CIと同じ`cargo +nightly fmt --all -- --check`も実行します。stable rustfmtは
+`.rustfmt.toml`のnightly専用設定を無視するため、整形判定には使用しません。
+ただし、上流由来または作業中の既存差分が
 ある場合は、今回触れていないファイルを機械的に整形して同じコミットへ混ぜないで
 ください。警告とエラーを区別し、将来互換警告は依存クレート名と内容を記録します。
 

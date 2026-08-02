@@ -353,7 +353,11 @@ pub fn remove_workspace(mux_workspace: &str) -> Option<HarborWorkspace> {
         .state
         .workspaces
         .get(index)
-        .or_else(|| index.checked_sub(1).and_then(|index| registry.state.workspaces.get(index)))
+        .or_else(|| {
+            index
+                .checked_sub(1)
+                .and_then(|index| registry.state.workspaces.get(index))
+        })
         .cloned();
     if let Err(err) = save(&registry) {
         log::error!("saving Terminal Harbor workspace removal: {err:#}");

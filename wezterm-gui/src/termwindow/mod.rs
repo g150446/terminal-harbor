@@ -7,8 +7,7 @@ use crate::inputmap::InputMap;
 use crate::overlay::{
     confirm_close_pane, confirm_close_tab, confirm_close_window, confirm_close_workspace,
     confirm_quit_program, launcher, start_overlay, start_overlay_pane, CopyModeParams, CopyOverlay,
-    LauncherArgs, LauncherFlags,
-    QuickSelectOverlay,
+    LauncherArgs, LauncherFlags, QuickSelectOverlay,
 };
 use crate::resize_increment_calculator::ResizeIncrementCalculator;
 use crate::scripting::guiwin::GuiWin;
