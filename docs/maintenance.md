@@ -101,6 +101,65 @@ codesign --verify --deep --strict --verbose=2 "/path/to/Terminal Harbor.app"
 です。永続mux導入前の版、muxプロトコル変更、またはmuxサーバー自身の修正を含む
 リリースでは、完全再起動をリリース手順に明記します。
 
+### このMacでの内部リリース配置
+
+内部検証用の4バイナリは次のコマンドで作成します。
+
+```sh
+cargo +stable build --release \
+  -p wezterm-gui -p wezterm -p wezterm-mux-server -p strip-ansi-escapes
+```
+
+`assets/macos/Terminal Harbor.app`を一時ディレクトリへ複製し、4バイナリ、
+`assets/shell-integration/wezterm.sh`、`assets/shell-completion/`を所定位置へ
+配置します。terminfoは`termwiz/data/wezterm.terminfo`から`tic -x`でステージング
+先へ生成します。バイナリを必要に応じて`strip`した後にバンドル全体を署名し、
+署名検証が成功した完成品だけを`/Applications/Terminal Harbor.app`へ入れ替えます。
+
+配置後は次を記録します。
+
+- source commitとdirty treeの有無
+- Rust toolchain、ビルド日時、4バイナリのSHA-256
+- 署名方式と`codesign --verify`の結果
+- 配置日時、更新前バンドルの退避先、必要な再起動方式
+
+実行中バンドルへのファイル単位のコピーや、debug/releaseバイナリの混在は避けます。
+アプリを置き換えただけでは実行中プロセスは更新されません。bridgeだけの変更なら
+保持再起動で反映でき、Mac本体の再起動は不要です。
+
+## モバイルbridgeの運用
+
+bridgeは`wezterm-gui`内で`0.0.0.0:7780`をlistenし、
+`_terminal-harbor._tcp.local.`をBonjour広告します。bridgeの変更はGUI再起動で
+反映されます。`wezterm-mux-server`はbridgeを所有しないため、bridgeだけの更新で
+ターミナルセッションを破棄する必要はありません。
+
+macOSの永続状態は通常
+`~/Library/Application Support/terminal-harbor/mobile-devices.json`にあります。
+ここにはstable `server_id`、client ID、長期secretが含まれるため、秘密情報として
+扱います。内容、バックアップ、QR、pair URIをログ、issue、スクリーンショット、
+コミットへ含めないでください。状態ファイルの削除や再生成はserver identityを変え、
+既存クライアントの再pairingが必要になるため、通常の障害対応では行いません。
+
+更新後は次を確認します。
+
+```sh
+/usr/sbin/lsof -nP -iTCP:7780 -sTCP:LISTEN
+curl --fail http://127.0.0.1:7780/v1/identity
+dns-sd -B _terminal-harbor._tcp local
+```
+
+最後のコマンドは確認後にCtrl-Cで終了します。identity応答では`server_id`、API版、
+`hmac-sha256-v1`を確認しますが、値を公開ログへ貼り付けません。さらに既存pairingと
+新規QRの両方で接続し、Tailscale endpoint、LAN fallback、LANアドレス変更後の
+mDNS再発見を確認します。mDNS候補は署名済み`/v1/identity`の`server_id`が保存値と
+一致した場合だけ利用されます。
+
+HMAC要求はMacとphoneの時計差が5分を超えると拒否されます。全endpointで同時に
+認証失敗する場合は、秘密情報を表示する前に時計、`client_id`の存続、desktop/mobile
+の配備順を確認します。nonce replay cacheはプロセス内状態なので、再起動を認証回避
+手段として使わず、原因を特定してください。
+
 ## リリース後の受け入れ確認
 
 保持再起動では、再起動前後のGUI PIDが変わり、mux PID、ペインID、TTYが同じで
@@ -121,6 +180,7 @@ wezterm restart --full
 3. 保持再起動後もシェル、Codex、スクロールバックが継続する。
 4. 完全再起動後に新しいシェルを正常に作成できる。
 5. モバイルブリッジを使用する構成では、ポート `7780` の競合がなく再接続できる。
+6. `_terminal-harbor._tcp`が広告され、保存済み端末が同じ`server_id`へ再接続できる。
 
 ## 障害切り分け
 

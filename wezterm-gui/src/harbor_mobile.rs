@@ -3,10 +3,17 @@
 use crate::harbor_workspace::{self, WorkspaceActivity};
 use crate::termwindow::TermWindowNotif;
 use anyhow::{anyhow, Context};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
+use mdns_sd::{ServiceDaemon, ServiceInfo};
 use mux::Mux;
 use parking_lot::Mutex;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -22,17 +29,40 @@ use window::WindowOps;
 pub const DEFAULT_PORT: u16 = 7780;
 const PAIR_TOKEN_TTL: Duration = Duration::from_secs(5 * 60);
 const API_VERSION: &str = "1.0.0";
+const AUTH_VERSION: &str = "hmac-sha256-v1";
+const AUTH_CLOCK_SKEW_SECS: u64 = 5 * 60;
+const REPLAY_TTL_SECS: u64 = 10 * 60;
+
+fn new_client_id() -> String {
+    Uuid::new_v4().to_string()
+}
+
+fn default_auth_version() -> u8 {
+    1
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct DeviceRecord {
+    #[serde(default)]
+    client_id: String,
     token: String,
     name: String,
     created_at: u64,
+    #[serde(default = "default_auth_version")]
+    auth_version: u8,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 struct PersistedBridgeState {
+    #[serde(default)]
+    server_id: String,
     devices: Vec<DeviceRecord>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct Endpoint {
+    kind: &'static str,
+    url: String,
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +81,7 @@ pub struct PairingView {
 }
 
 struct BridgeInner {
+    server_id: String,
     port: u16,
     host: String,
     pair_offer: Option<PairOffer>,
@@ -58,16 +89,19 @@ struct BridgeInner {
     pairing_ui_visible: bool,
     /// PNG rendered for the current offer: (token, path).
     qr_png: Option<(String, PathBuf)>,
+    replay_nonces: VecDeque<(String, String, u64)>,
 }
 
 lazy_static::lazy_static! {
     static ref INNER: Mutex<BridgeInner> = Mutex::new(BridgeInner {
+        server_id: String::new(),
         port: DEFAULT_PORT,
         host: String::new(),
         pair_offer: None,
         devices: HashMap::new(),
         pairing_ui_visible: false,
         qr_png: None,
+        replay_nonces: VecDeque::new(),
     });
 }
 
@@ -108,17 +142,166 @@ fn guess_lan_ip() -> String {
     "127.0.0.1".to_string()
 }
 
+fn endpoint(kind: &'static str, url: String) -> Endpoint {
+    Endpoint { kind, url }
+}
+
+fn tailscale_output(args: &[&str]) -> Option<Vec<u8>> {
+    let candidates = [
+        "/usr/local/bin/tailscale",
+        "/opt/homebrew/bin/tailscale",
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        "tailscale",
+    ];
+    let mut child = candidates.iter().find_map(|executable| {
+        std::process::Command::new(executable)
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()
+    })?;
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                let mut output = Vec::new();
+                child.stdout.take()?.read_to_end(&mut output).ok()?;
+                return Some(output);
+            }
+            Ok(Some(_)) | Err(_) => return None,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+fn connection_endpoints(host: &str, port: u16) -> Vec<Endpoint> {
+    let mut endpoints = Vec::new();
+    if let Some(status_bytes) = tailscale_output(&["status", "--json"]) {
+        if let Ok(status) = serde_json::from_slice::<serde_json::Value>(&status_bytes) {
+            let running = status
+                .get("BackendState")
+                .and_then(|value| value.as_str())
+                .map(|value| value.eq_ignore_ascii_case("running"))
+                .unwrap_or(false);
+            if running {
+                let dns_name = status
+                    .get("Self")
+                    .and_then(|value| value.get("DNSName"))
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.trim_end_matches('.'))
+                    .filter(|value| !value.is_empty());
+                let serve_enabled = tailscale_output(&["serve", "status", "--json"])
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                    .map(|text| {
+                        text.contains("127.0.0.1:7780")
+                            || text.contains("localhost:7780")
+                            || text.contains("http://127.0.0.1:7780")
+                    })
+                    .unwrap_or(false);
+                if serve_enabled {
+                    if let Some(name) = dns_name {
+                        endpoints.push(endpoint("tailscale_https", format!("https://{name}")));
+                    }
+                }
+                if let Some(name) = dns_name {
+                    endpoints.push(endpoint(
+                        "tailscale_direct",
+                        format!("http://{name}:{port}"),
+                    ));
+                }
+                if let Some(ips) = status
+                    .get("Self")
+                    .and_then(|value| value.get("TailscaleIPs"))
+                    .and_then(|value| value.as_array())
+                {
+                    for ip in ips.iter().filter_map(|value| value.as_str()) {
+                        let authority = if ip.contains(':') {
+                            format!("[{ip}]")
+                        } else {
+                            ip.to_string()
+                        };
+                        endpoints.push(endpoint(
+                            "tailscale_direct",
+                            format!("http://{authority}:{port}"),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    endpoints.push(endpoint("lan", format!("http://{host}:{port}")));
+    endpoints
+}
+
+fn start_dns_sd(server_id: &str, port: u16) -> anyhow::Result<ServiceDaemon> {
+    let daemon = ServiceDaemon::new().context("start DNS-SD daemon")?;
+    daemon
+        .set_service_name_len_max(20)
+        .context("allow Terminal Harbor DNS-SD service name")?;
+    let instance = device_name();
+    let mut hostname = host_name().trim_end_matches('.').to_string();
+    if !hostname.ends_with(".local") {
+        hostname.push_str(".local");
+    }
+    hostname.push('.');
+    let properties = [
+        ("sid", server_id),
+        ("api", API_VERSION),
+        ("auth", AUTH_VERSION),
+    ];
+    let info = ServiceInfo::new(
+        "_terminal-harbor._tcp.local.",
+        &instance,
+        &hostname,
+        "",
+        port,
+        &properties[..],
+    )?
+    .enable_addr_auto();
+    daemon.register(info).context("register DNS-SD service")?;
+    Ok(daemon)
+}
+
 fn load_devices(inner: &mut BridgeInner) {
     let path = devices_path();
     let Ok(data) = fs::read(&path) else {
+        inner.server_id = Uuid::new_v4().to_string();
+        if let Err(err) = save_devices(inner) {
+            log::error!("initializing mobile bridge identity: {err:#}");
+        }
         return;
     };
-    if let Ok(state) = serde_json::from_slice::<PersistedBridgeState>(&data) {
+    if let Ok(mut state) = serde_json::from_slice::<PersistedBridgeState>(&data) {
+        let mut migrated = false;
+        if state.server_id.is_empty() {
+            state.server_id = Uuid::new_v4().to_string();
+            migrated = true;
+        }
+        for device in &mut state.devices {
+            if device.client_id.is_empty() {
+                device.client_id = new_client_id();
+                migrated = true;
+            }
+        }
+        inner.server_id = state.server_id;
         inner.devices = state
             .devices
             .into_iter()
             .map(|d| (d.token.clone(), d))
             .collect();
+        if migrated {
+            if let Err(err) = save_devices(inner) {
+                log::error!("migrating mobile bridge identity: {err:#}");
+            }
+        }
+    } else {
+        inner.server_id = Uuid::new_v4().to_string();
     }
 }
 
@@ -126,6 +309,7 @@ fn save_devices(inner: &BridgeInner) -> anyhow::Result<()> {
     let dir = state_dir();
     fs::create_dir_all(&dir)?;
     let state = PersistedBridgeState {
+        server_id: inner.server_id.clone(),
         devices: inner.devices.values().cloned().collect(),
     };
     let temp = dir.join("mobile-devices.json.tmp");
@@ -166,8 +350,17 @@ fn write_pair_qr_png(uri: &str) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-fn build_pair_uri(host: &str, port: u16, token: &str) -> String {
-    format!("harbor://pair?v=1&host={host}&port={port}&tls=0&token={token}")
+fn build_pair_uri(host: &str, port: u16, token: &str, server_id: &str) -> String {
+    let endpoints = connection_endpoints(host, port);
+    let mut uri = format!(
+        "harbor://pair?v=1&host={host}&port={port}&tls=0&token={token}&sid={server_id}&auth={AUTH_VERSION}"
+    );
+    for endpoint in endpoints {
+        let value = format!("{},{}", endpoint.kind, endpoint.url);
+        uri.push_str("&endpoint=");
+        uri.push_str(&utf8_percent_encode(&value, NON_ALPHANUMERIC).to_string());
+    }
+    uri
 }
 
 /// Start the LAN bridge once (idempotent). Safe to call from the GUI thread.
@@ -196,11 +389,22 @@ pub fn ensure_running() {
 }
 
 fn run_server() -> anyhow::Result<()> {
-    let port = { INNER.lock().port };
+    let (port, server_id) = {
+        let inner = INNER.lock();
+        (inner.port, inner.server_id.clone())
+    };
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = TcpListener::bind(addr).with_context(|| format!("bind mobile bridge on {addr}"))?;
+    let listener =
+        TcpListener::bind(addr).with_context(|| format!("bind mobile bridge on {addr}"))?;
     listener.set_nonblocking(false)?;
     log::info!("Terminal Harbor mobile bridge listening on http://0.0.0.0:{port}");
+    let _dns_sd = match start_dns_sd(&server_id, port) {
+        Ok(daemon) => Some(daemon),
+        Err(err) => {
+            log::warn!("Terminal Harbor DNS-SD unavailable: {err:#}");
+            None
+        }
+    };
 
     for stream in listener.incoming() {
         match stream {
@@ -217,6 +421,172 @@ fn run_server() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[derive(Debug)]
+struct HttpResponse {
+    status: u16,
+    body: String,
+    headers: Vec<(String, String)>,
+}
+
+#[derive(Clone)]
+struct HmacResponseAuth {
+    key: Vec<u8>,
+    request_nonce: String,
+}
+
+enum RequestAuth {
+    Legacy {
+        client_id: String,
+    },
+    Hmac {
+        client_id: String,
+        response: HmacResponseAuth,
+    },
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn canonical_request(
+    method: &str,
+    path: &str,
+    timestamp: &str,
+    nonce: &str,
+    body: &[u8],
+) -> String {
+    format!(
+        "TH-HMAC-V1\n{}\n{}\n{}\n{}\n{}",
+        method.to_ascii_uppercase(),
+        path,
+        timestamp,
+        nonce,
+        sha256_hex(body)
+    )
+}
+
+fn hmac_value(key: &[u8], value: &[u8]) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key size");
+    mac.update(value);
+    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+}
+
+fn device_key(record: &DeviceRecord) -> Option<Vec<u8>> {
+    if record.auth_version >= 2 {
+        URL_SAFE_NO_PAD.decode(record.token.as_bytes()).ok()
+    } else {
+        Some(record.token.as_bytes().to_vec())
+    }
+}
+
+fn signed_response(status: u16, body: String, auth: Option<HmacResponseAuth>) -> HttpResponse {
+    let mut headers = Vec::new();
+    if let Some(auth) = auth {
+        let canonical = format!(
+            "TH-HMAC-V1-RESPONSE\n{}\n{}\n{}",
+            auth.request_nonce,
+            status,
+            sha256_hex(body.as_bytes())
+        );
+        headers.push((
+            "X-Harbor-Response-Signature".to_string(),
+            hmac_value(&auth.key, canonical.as_bytes()),
+        ));
+    }
+    HttpResponse {
+        status,
+        body,
+        headers,
+    }
+}
+
+fn authenticate_hmac(
+    method: &str,
+    path: &str,
+    headers: &HashMap<String, String>,
+    body: &[u8],
+) -> Option<RequestAuth> {
+    let client_id = headers.get("x-harbor-client-id")?.to_string();
+    let timestamp = headers.get("x-harbor-timestamp")?;
+    let timestamp_value = timestamp.parse::<u64>().ok()?;
+    let nonce = headers.get("x-harbor-nonce")?.to_string();
+    let signature = URL_SAFE_NO_PAD
+        .decode(headers.get("x-harbor-signature")?.as_bytes())
+        .ok()?;
+    let now = now_unix();
+    if now.abs_diff(timestamp_value) > AUTH_CLOCK_SKEW_SECS || nonce.len() < 16 {
+        return None;
+    }
+
+    let mut inner = INNER.lock();
+    let record = inner
+        .devices
+        .values()
+        .find(|record| record.client_id == client_id)?;
+    let key = device_key(record)?;
+    let canonical = canonical_request(method, path, timestamp, &nonce, body);
+    let mut mac = Hmac::<Sha256>::new_from_slice(&key).ok()?;
+    mac.update(canonical.as_bytes());
+    if mac.verify_slice(&signature).is_err() {
+        return None;
+    }
+    while inner
+        .replay_nonces
+        .front()
+        .map(|(_, _, seen)| now.saturating_sub(*seen) > REPLAY_TTL_SECS)
+        .unwrap_or(false)
+    {
+        inner.replay_nonces.pop_front();
+    }
+    if inner
+        .replay_nonces
+        .iter()
+        .any(|(seen_client, seen_nonce, _)| seen_client == &client_id && seen_nonce == &nonce)
+    {
+        return None;
+    }
+    inner
+        .replay_nonces
+        .push_back((client_id.clone(), nonce.clone(), now));
+    while inner.replay_nonces.len() > 4096 {
+        inner.replay_nonces.pop_front();
+    }
+    Some(RequestAuth::Hmac {
+        client_id,
+        response: HmacResponseAuth {
+            key,
+            request_nonce: nonce,
+        },
+    })
+}
+
+fn authenticate(
+    method: &str,
+    path: &str,
+    headers: &HashMap<String, String>,
+    body: &[u8],
+) -> Option<RequestAuth> {
+    if let Some(auth) = authenticate_hmac(method, path, headers, body) {
+        return Some(auth);
+    }
+    let token = headers
+        .get("authorization")
+        .and_then(|value| {
+            value
+                .strip_prefix("Bearer ")
+                .or_else(|| value.strip_prefix("bearer "))
+        })?
+        .trim();
+    let inner = INNER.lock();
+    let record = inner.devices.get(token)?;
+    Some(RequestAuth::Legacy {
+        client_id: record.client_id.clone(),
+    })
 }
 
 fn handle_client(mut stream: TcpStream) -> anyhow::Result<()> {
@@ -236,7 +606,7 @@ fn handle_client(mut stream: TcpStream) -> anyhow::Result<()> {
     let path = parts.next().unwrap_or("").to_string();
 
     let mut content_length = 0usize;
-    let mut authorization = String::new();
+    let mut headers = HashMap::new();
     for line in lines.by_ref() {
         if line.is_empty() {
             break;
@@ -244,17 +614,12 @@ fn handle_client(mut stream: TcpStream) -> anyhow::Result<()> {
         let lower = line.to_ascii_lowercase();
         if let Some(v) = lower.strip_prefix("content-length:") {
             content_length = v.trim().parse().unwrap_or(0);
-        } else if let Some(v) = line.split_once(':') {
-            if v.0.eq_ignore_ascii_case("authorization") {
-                authorization = v.1.trim().to_string();
-            }
+        } else if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
         }
     }
 
-    let header_end = req_text
-        .find("\r\n\r\n")
-        .map(|i| i + 4)
-        .unwrap_or(n);
+    let header_end = req_text.find("\r\n\r\n").map(|i| i + 4).unwrap_or(n);
     let mut body = Vec::new();
     if header_end < n {
         body.extend_from_slice(&buf[header_end..n]);
@@ -272,12 +637,13 @@ fn handle_client(mut stream: TcpStream) -> anyhow::Result<()> {
         }
     }
 
-    let (status, payload) = dispatch(&method, &path, &authorization, &body);
-    write_response(&mut stream, status, &payload)?;
+    let response = dispatch(&method, &path, &headers, &body);
+    write_response(&mut stream, response)?;
     Ok(())
 }
 
-fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> anyhow::Result<()> {
+fn write_response(stream: &mut TcpStream, response: HttpResponse) -> anyhow::Result<()> {
+    let status = response.status;
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -287,18 +653,23 @@ fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> anyhow::Re
         500 => "Internal Server Error",
         _ => "Error",
     };
+    let extra_headers = response
+        .headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect::<String>();
     let header = format!(
         "HTTP/1.1 {status} {reason}\r\n\
          Content-Type: application/json\r\n\
          Content-Length: {}\r\n\
          Access-Control-Allow-Origin: *\r\n\
-         Access-Control-Allow-Headers: Authorization, Content-Type\r\n\
+         Access-Control-Allow-Headers: Authorization, Content-Type, X-Harbor-Client-Id, X-Harbor-Timestamp, X-Harbor-Nonce, X-Harbor-Signature\r\n\
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-         Connection: close\r\n\r\n",
-        body.len()
+         {extra_headers}Connection: close\r\n\r\n",
+        response.body.len()
     );
     stream.write_all(header.as_bytes())?;
-    stream.write_all(body.as_bytes())?;
+    stream.write_all(response.body.as_bytes())?;
     Ok(())
 }
 
@@ -343,31 +714,82 @@ fn device_name() -> String {
     host_name()
 }
 
-fn dispatch(method: &str, path: &str, authorization: &str, body: &[u8]) -> (u16, String) {
+fn dispatch(
+    method: &str,
+    raw_path: &str,
+    headers: &HashMap<String, String>,
+    body: &[u8],
+) -> HttpResponse {
     if method == "OPTIONS" {
-        return (200, String::new());
+        return signed_response(200, String::new(), None);
     }
-    let (path, query) = match path.split_once('?') {
+    let (path, query) = match raw_path.split_once('?') {
         Some((p, q)) => (p, q),
-        None => (path, ""),
+        None => (raw_path, ""),
     };
 
     if method == "POST" && path == "/v1/pair" {
-        return pair(body);
+        return pair(raw_path, headers, body);
     }
 
-    if !authorize(authorization) {
-        return (401, json_error("unauthorized"));
+    let auth = authenticate(method, raw_path, headers, body);
+    if method == "GET" && path == "/v1/identity" && auth.is_none() {
+        let inner = INNER.lock();
+        return signed_response(
+            200,
+            serde_json::json!({
+                "server_id": inner.server_id,
+                "version": API_VERSION,
+                "auth_versions": [AUTH_VERSION],
+            })
+            .to_string(),
+            None,
+        );
+    }
+    let auth = match auth {
+        Some(auth) => auth,
+        None => return signed_response(401, json_error("unauthorized"), None),
+    };
+    let (client_id, response_auth) = match &auth {
+        RequestAuth::Legacy { client_id } => (client_id.clone(), None),
+        RequestAuth::Hmac {
+            client_id,
+            response,
+        } => (client_id.clone(), Some(response.clone())),
+    };
+
+    let finish = |status, body| signed_response(status, body, response_auth.clone());
+
+    if method == "GET" && path == "/v1/identity" {
+        let inner = INNER.lock();
+        return finish(
+            200,
+            serde_json::json!({
+                "server_id": inner.server_id,
+                "version": API_VERSION,
+                "auth_versions": [AUTH_VERSION],
+            })
+            .to_string(),
+        );
     }
 
     if method == "GET" && path == "/v1/session" {
-        return (
+        let (server_id, host, port) = {
+            let inner = INNER.lock();
+            (inner.server_id.clone(), inner.host.clone(), inner.port)
+        };
+        let endpoints = connection_endpoints(&host, port);
+        return finish(
             200,
             serde_json::json!({
                 "ok": true,
                 "version": API_VERSION,
                 "device_name": device_name(),
                 "host_name": host_name(),
+                "server_id": server_id,
+                "client_id": client_id,
+                "auth_versions": [AUTH_VERSION],
+                "endpoints": endpoints,
             })
             .to_string(),
         );
@@ -375,8 +797,8 @@ fn dispatch(method: &str, path: &str, authorization: &str, body: &[u8]) -> (u16,
 
     if method == "GET" && path == "/v1/workspaces" {
         return match run_on_main(list_workspaces_json) {
-            Ok(json) => (200, json),
-            Err(err) => (500, json_error(&format!("{err:#}"))),
+            Ok(json) => finish(200, json),
+            Err(err) => finish(500, json_error(&format!("{err:#}"))),
         };
     }
 
@@ -387,13 +809,13 @@ fn dispatch(method: &str, path: &str, authorization: &str, body: &[u8]) -> (u16,
         if method == "POST" {
             let id = id.to_string();
             return match run_on_main(move || activate_workspace(&id)) {
-                Ok(()) => (200, serde_json::json!({"ok": true}).to_string()),
+                Ok(()) => finish(200, serde_json::json!({"ok": true}).to_string()),
                 Err(err) => {
                     let msg = format!("{err:#}");
                     if msg.contains("not found") {
-                        (404, json_error(&msg))
+                        finish(404, json_error(&msg))
                     } else {
-                        (500, json_error(&msg))
+                        finish(500, json_error(&msg))
                     }
                 }
             };
@@ -416,17 +838,17 @@ fn dispatch(method: &str, path: &str, authorization: &str, body: &[u8]) -> (u16,
             }
             let parsed: InstructionBody = match serde_json::from_slice(body) {
                 Ok(v) => v,
-                Err(_) => return (400, json_error("invalid json body")),
+                Err(_) => return finish(400, json_error("invalid json body")),
             };
             let id = id.to_string();
             return match run_on_main(move || send_instruction(&id, &parsed.text, parsed.submit)) {
-                Ok(()) => (200, serde_json::json!({"ok": true}).to_string()),
+                Ok(()) => finish(200, serde_json::json!({"ok": true}).to_string()),
                 Err(err) => {
                     let msg = format!("{err:#}");
                     if msg.contains("not found") {
-                        (404, json_error(&msg))
+                        finish(404, json_error(&msg))
                     } else {
-                        (500, json_error(&msg))
+                        finish(500, json_error(&msg))
                     }
                 }
             };
@@ -444,13 +866,13 @@ fn dispatch(method: &str, path: &str, authorization: &str, body: &[u8]) -> (u16,
                 .clamp(1, 200);
             let id = id.to_string();
             return match run_on_main(move || screen_text(&id, lines)) {
-                Ok(json) => (200, json),
+                Ok(json) => finish(200, json),
                 Err(err) => {
                     let msg = format!("{err:#}");
                     if msg.contains("not found") {
-                        (404, json_error(&msg))
+                        finish(404, json_error(&msg))
                     } else {
-                        (500, json_error(&msg))
+                        finish(500, json_error(&msg))
                     }
                 }
             };
@@ -458,71 +880,138 @@ fn dispatch(method: &str, path: &str, authorization: &str, body: &[u8]) -> (u16,
     }
 
     if method != "GET" && method != "POST" {
-        return (405, json_error("method not allowed"));
+        return finish(405, json_error("method not allowed"));
     }
-    (404, json_error("not found"))
+    finish(404, json_error("not found"))
 }
 
-fn authorize(authorization: &str) -> bool {
-    let token = authorization
-        .strip_prefix("Bearer ")
-        .or_else(|| authorization.strip_prefix("bearer "))
-        .unwrap_or("")
-        .trim();
-    if token.is_empty() {
-        return false;
-    }
-    INNER.lock().devices.contains_key(token)
+fn derive_device_key(pair_token: &str, server_id: &str, client_id: &str, nonce: &[u8]) -> Vec<u8> {
+    let hk = Hkdf::<Sha256>::new(Some(server_id.as_bytes()), pair_token.as_bytes());
+    let mut info = b"terminal-harbor/device/v2\0".to_vec();
+    info.extend_from_slice(client_id.as_bytes());
+    info.push(0);
+    info.extend_from_slice(nonce);
+    let mut key = vec![0u8; 32];
+    hk.expand(&info, &mut key)
+        .expect("valid HKDF output length");
+    key
 }
 
-fn pair(body: &[u8]) -> (u16, String) {
+fn pair(raw_path: &str, headers: &HashMap<String, String>, body: &[u8]) -> HttpResponse {
     #[derive(Deserialize)]
     struct PairBody {
-        token: String,
+        #[serde(default)]
+        token: Option<String>,
         #[serde(default)]
         device_name: Option<String>,
+        #[serde(default)]
+        auth_version: Option<String>,
+        #[serde(default)]
+        client_id: Option<String>,
+        #[serde(default)]
+        client_nonce: Option<String>,
     }
     let parsed: PairBody = match serde_json::from_slice(body) {
         Ok(v) => v,
-        Err(_) => return (400, json_error("invalid json body")),
+        Err(_) => return signed_response(400, json_error("invalid json body"), None),
     };
 
     let mut inner = INNER.lock();
     let offer = match inner.pair_offer.clone() {
         Some(o) => o,
-        None => return (401, json_error("no active pairing offer")),
+        None => return signed_response(401, json_error("no active pairing offer"), None),
     };
     if Instant::now() > offer.expires_at {
         inner.pair_offer = None;
-        return (401, json_error("pairing token expired"));
-    }
-    if parsed.token != offer.token {
-        return (401, json_error("invalid pairing token"));
+        return signed_response(401, json_error("pairing token expired"), None);
     }
 
-    // one-time
-    inner.pair_offer = None;
-    let device_token = random_token();
-    let record = DeviceRecord {
-        token: device_token.clone(),
-        name: parsed
-            .device_name
-            .unwrap_or_else(|| "Mobile".to_string()),
-        created_at: now_unix(),
+    let hmac_pairing = parsed.auth_version.as_deref() == Some(AUTH_VERSION);
+    let (client_id, stored_secret, response_key, auth_version) = if hmac_pairing {
+        let client_id = match parsed.client_id.filter(|id| Uuid::parse_str(id).is_ok()) {
+            Some(id) => id,
+            None => return signed_response(400, json_error("invalid client_id"), None),
+        };
+        let nonce = match parsed
+            .client_nonce
+            .as_deref()
+            .and_then(|value| URL_SAFE_NO_PAD.decode(value.as_bytes()).ok())
+            .filter(|value| value.len() == 32)
+        {
+            Some(value) => value,
+            None => return signed_response(400, json_error("invalid client_nonce"), None),
+        };
+        let timestamp = match headers.get("x-harbor-timestamp") {
+            Some(value) => value,
+            None => return signed_response(401, json_error("missing pairing signature"), None),
+        };
+        let request_nonce = match headers.get("x-harbor-nonce") {
+            Some(value) if value.len() >= 16 => value,
+            _ => return signed_response(401, json_error("invalid pairing nonce"), None),
+        };
+        let timestamp_value = match timestamp.parse::<u64>() {
+            Ok(value) if now_unix().abs_diff(value) <= AUTH_CLOCK_SKEW_SECS => value,
+            _ => return signed_response(401, json_error("expired pairing signature"), None),
+        };
+        let _ = timestamp_value;
+        let signature = match headers
+            .get("x-harbor-signature")
+            .and_then(|value| URL_SAFE_NO_PAD.decode(value.as_bytes()).ok())
+        {
+            Some(value) => value,
+            None => return signed_response(401, json_error("invalid pairing signature"), None),
+        };
+        let canonical = canonical_request("POST", raw_path, timestamp, request_nonce, body);
+        let mut mac = Hmac::<Sha256>::new_from_slice(offer.token.as_bytes()).unwrap();
+        mac.update(canonical.as_bytes());
+        if mac.verify_slice(&signature).is_err() {
+            return signed_response(401, json_error("invalid pairing signature"), None);
+        }
+        let key = derive_device_key(&offer.token, &inner.server_id, &client_id, &nonce);
+        (client_id, URL_SAFE_NO_PAD.encode(&key), Some(key), 2)
+    } else {
+        if parsed.token.as_deref() != Some(offer.token.as_str()) {
+            return signed_response(401, json_error("invalid pairing token"), None);
+        }
+        (new_client_id(), random_token(), None, 1)
     };
-    inner.devices.insert(device_token.clone(), record);
+
+    inner.pair_offer = None;
+    let record = DeviceRecord {
+        client_id: client_id.clone(),
+        token: stored_secret.clone(),
+        name: parsed.device_name.unwrap_or_else(|| "Mobile".to_string()),
+        created_at: now_unix(),
+        auth_version,
+    };
+    inner.devices.insert(stored_secret.clone(), record);
     if let Err(err) = save_devices(&inner) {
         log::error!("saving mobile devices: {err:#}");
     }
 
-    let base_url = format!("http://{}:{}", inner.host, inner.port);
-    (
+    let host = inner.host.clone();
+    let port = inner.port;
+    let server_id = inner.server_id.clone();
+    let base_url = format!("http://{host}:{port}");
+    let response_nonce = headers.get("x-harbor-nonce").cloned().unwrap_or_default();
+    let response_auth = response_key.map(|key| HmacResponseAuth {
+        key,
+        request_nonce: response_nonce,
+    });
+    drop(inner);
+    let endpoints = connection_endpoints(&host, port);
+    signed_response(
         200,
         serde_json::json!({
-            "device_token": device_token,
+            "device_token": if auth_version == 1 { Some(stored_secret) } else { None },
             "base_url": base_url,
+            "server_id": server_id,
+            "client_id": client_id,
+            "auth_versions": [AUTH_VERSION],
+            "endpoints": endpoints,
         })
         .to_string(),
+        response_auth,
     )
 }
 
@@ -707,7 +1196,7 @@ pub fn pairing_view() -> Option<PairingView> {
         .expires_at
         .saturating_duration_since(Instant::now())
         .as_secs();
-    let uri = build_pair_uri(&inner.host, inner.port, &offer.token);
+    let uri = build_pair_uri(&inner.host, inner.port, &offer.token, &inner.server_id);
 
     // (Re)render the scannable PNG when the offer changes.
     let needs_png = match &inner.qr_png {
@@ -740,6 +1229,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hmac_canonical_request_binds_method_target_and_body() {
+        let canonical = canonical_request(
+            "post",
+            "/v1/workspaces/one/instruction",
+            "1700000000",
+            "abcdefghijklmnop",
+            br#"{"text":"continue"}"#,
+        );
+        assert_eq!(
+            canonical,
+            format!(
+                "TH-HMAC-V1\nPOST\n/v1/workspaces/one/instruction\n1700000000\nabcdefghijklmnop\n{}",
+                sha256_hex(br#"{"text":"continue"}"#)
+            )
+        );
+        assert_ne!(
+            hmac_value(b"secret", canonical.as_bytes()),
+            hmac_value(b"secret", canonical.replace("POST", "GET").as_bytes())
+        );
+    }
+
+    #[test]
+    fn device_key_derivation_is_stable_and_context_bound() {
+        let nonce = [7u8; 32];
+        let first = derive_device_key("pair-token", "server-one", "client-one", &nonce);
+        let again = derive_device_key("pair-token", "server-one", "client-one", &nonce);
+        let other_server = derive_device_key("pair-token", "server-two", "client-one", &nonce);
+        assert_eq!(first.len(), 32);
+        assert_eq!(first, again);
+        assert_ne!(first, other_server);
+        let hex = first
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            hex,
+            "313c4fbd5eb8f46a4a6a25427b18281b3ad8b351aaad1e650f561b37aaa6fdff"
+        );
+    }
+
+    #[test]
     fn session_names_are_non_empty() {
         assert!(!device_name().is_empty());
         assert!(!host_name().is_empty());
@@ -747,8 +1277,16 @@ mod tests {
 
     #[test]
     fn pair_qr_png_is_written_and_decodable_shape() {
-        let uri = build_pair_uri("192.168.1.20", DEFAULT_PORT, "deadbeefcafe");
+        let uri = build_pair_uri(
+            "192.168.1.20",
+            DEFAULT_PORT,
+            "deadbeefcafe",
+            "11111111-1111-1111-1111-111111111111",
+        );
         let path = write_pair_qr_png(&uri).expect("write qr png");
+        assert!(uri.contains("sid=11111111-1111-1111-1111-111111111111"));
+        assert!(uri.contains("auth=hmac-sha256-v1"));
+        assert!(uri.contains("endpoint="));
         let bytes = std::fs::read(&path).expect("read qr png");
         // PNG magic
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");

@@ -28,21 +28,38 @@ The companion app lives in the separate repository
      Harbor workspaces / mux panes
 ```
 
-The app speaks **plain JSON HTTP** to the bridge. It never uses the WezTerm
+The app speaks JSON HTTP to the bridge. New clients authenticate every request
+and response with HMAC-SHA256; Bearer remains available for old clients. It never uses the WezTerm
 binary mux protocol — keep it that way so the app stays simple and portable.
 
 ## Pairing flow
 
 1. Sidebar **Pair mobile** toggles the pairing panel and mints a one-time
    token (5 minute TTL).
-2. The pair URI `harbor://pair?v=1&host=<lan-ip>&port=7780&tls=0&token=...`
-   is rendered as a **square PNG with a quiet zone** (see "Why PNG" below),
+2. The pair URI keeps `v=1`, `host`, `port`, `tls`, and `token`, and adds the
+   stable server ID, `auth=hmac-sha256-v1`, and typed Tailscale/LAN endpoints.
+   It is rendered as a **square PNG with a quiet zone** (see "Why PNG" below),
    written to `state_dir()/pair-qr.png` and opened with the OS image viewer
    (`open` / `xdg-open` / `cmd /C start`). The URI is also copied to the
    clipboard for the app's Manual entry fallback.
-3. App `POST /v1/pair` with the token → receives a long-lived `device_token`
-   (persisted in `state_dir()/mobile-devices.json`).
-4. All other endpoints require `Authorization: Bearer <device_token>`.
+3. New apps HMAC-sign `POST /v1/pair` without transmitting the one-time token.
+   Both peers derive the long-lived secret using HKDF-SHA256. Legacy apps can
+   still exchange the raw token for a bearer token.
+4. New apps sign method, request target, timestamp, nonce, and body hash. The
+   bridge rejects stale/replayed nonces and signs every response.
+
+The bridge persists a `server_id` and per-device `client_id` in
+`mobile-devices.json`. Existing records receive IDs on first load. It advertises
+`_terminal-harbor._tcp.local.` with public `sid`, API, and auth TXT fields. The
+mobile app accepts a discovered address only after its signed `/v1/identity`
+response verifies for the saved server ID.
+
+On macOS the state file is normally at
+`~/Library/Application Support/terminal-harbor/mobile-devices.json`. It contains
+long-lived secrets. Do not log, commit, or attach it to an issue. Deleting it
+regenerates the server ID and invalidates existing pairings; back it up and
+restore it only as protected operational data and only while Terminal Harbor is
+fully stopped.
 
 The mobile app stores multiple bridge URLs and tokens in its platform secure
 storage. It lists those local records without calling the bridge at startup;
@@ -68,6 +85,7 @@ Full contract: `openapi/harbor-mobile.yaml` in the mobile repo.
 | Method | Path | Notes |
 |---|---|---|
 | POST | `/v1/pair` | No auth. One-time token → device token |
+| GET | `/v1/identity` | Stable server identity; signed for authenticated clients |
 | GET | `/v1/session` | Connection check plus desktop identity metadata |
 | GET | `/v1/workspaces` | Workspace list with activity state |
 | POST | `/v1/workspaces/{id}/activate` | Switch active workspace |
@@ -135,6 +153,29 @@ All mux access goes through `run_on_main` (see below).
   already on the GUI thread (e.g. `activate_workspace`) must use
   `TermWindowNotif::Apply` fire-and-forget instead.
 
+## Deployment and health checks
+
+The bridge is owned by `wezterm-gui`, not `wezterm-mux-server`. Build and deploy
+the desktop before the mobile app when changing the shared contract. Replacing
+`/Applications/Terminal Harbor.app` does not update an already-running GUI;
+quit/relaunch it or use the supported session-preserving GUI restart. macOS does
+not need to reboot for a bridge-only update.
+
+After restart, verify the listener and the unauthenticated identity metadata:
+
+```sh
+/usr/sbin/lsof -nP -iTCP:7780 -sTCP:LISTEN
+curl --fail http://127.0.0.1:7780/v1/identity
+```
+
+Use `dns-sd -B _terminal-harbor._tcp local` for a bounded manual Bonjour check
+(stop it with Ctrl-C). Then verify one existing HMAC pairing and one new QR.
+Authentication permits at most five minutes of clock skew, so clock sync is the
+first check when every otherwise reachable endpoint fails authentication.
+
+Build, bundle, signing, rollback, and process restart procedures are maintained
+in [`maintenance.md`](maintenance.md).
+
 ## Window centering
 
 `TermWindow::new_window` centers new windows when no explicit position was
@@ -180,8 +221,10 @@ then `window.set_window_position(ScreenPoint)` is applied post-creation.
 
 ## Limitations / TODO
 
-- No TLS; pair URI has `tls=0` and the `fp` fingerprint field is parsed by
-  the app but not pinned/verified. LAN-only trust model for now.
+- LAN HTTP does not conceal request/response contents, but HMAC prevents secret
+  disclosure, request forgery, replay, and response modification. Prefer
+  Tailscale Serve HTTPS when confidentiality is required. The legacy `fp`
+  field remains compatibility-only.
 - Screen mirror is plain text (no colors/styles) and polling-based, not
   streamed; it targets the **active pane** of the workspace only.
 - The mobile app can remove an individual local pairing, but this does not

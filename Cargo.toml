@@ -45,6 +45,8 @@ async_ossl = { path = "async_ossl" }
 backtrace = "0.3"
 base64 = {version="0.22", default-features=false }
 base91 = { path = "base91" }
+hmac = "0.12"
+hkdf = "0.12"
 battery = { path = "lua-api-crates/battery" }
 benchmarking = "0.4"
 bintree = { path = "bintree" }
@@ -138,6 +140,7 @@ maplit = "1.0"
 memmap2 = "0.9"
 memmem = "0.1"
 metrics = "0.23"
+mdns-sd = "0.20.3"
 miniz_oxide = "0.7"
 mio = "0.8"
 mlua = "0.9"
