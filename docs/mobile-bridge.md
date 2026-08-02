@@ -88,9 +88,18 @@ Full contract: `openapi/harbor-mobile.yaml` in the mobile repo.
 | GET | `/v1/identity` | Stable server identity; signed for authenticated clients |
 | GET | `/v1/session` | Connection check plus desktop identity metadata |
 | GET | `/v1/workspaces` | Workspace list with activity state |
+| POST | `/v1/workspaces` | Create and activate a workspace; optional body field `root` is an absolute desktop directory |
 | POST | `/v1/workspaces/{id}/activate` | Switch active workspace |
 | POST | `/v1/workspaces/{id}/instruction` | Body `{text, submit=true}` |
 | GET | `/v1/workspaces/{id}/screen?lines=N` | Plain-text screen mirror, N=1..200, default 60 |
+
+`POST /v1/workspaces` accepts `{}` or `{"root":"/absolute/desktop/path"}`.
+Blank or absent `root` uses the selected workspace root, then the desktop home
+directory. Explicit roots are trimmed, must be absolute, are canonicalized, and
+must name an existing directory. The bridge persists the new Harbor workspace,
+queues activation on the GUI thread, and returns `201` with the workspace
+record. A mobile release that exposes this action therefore requires the
+desktop bridge release to be deployed and restarted first.
 
 ### Session identity and compatibility
 
@@ -152,6 +161,9 @@ All mux access goes through `run_on_main` (see below).
 - Never call `run_on_main` from the GUI thread itself — it deadlocks. Code
   already on the GUI thread (e.g. `activate_workspace`) must use
   `TermWindowNotif::Apply` fire-and-forget instead.
+- Workspace creation enters through `run_on_main`, updates the registry there,
+  and uses the existing fire-and-forget activation path. Do not wait for the
+  `TermWindowNotif::Apply` callback from the GUI thread.
 
 ## Deployment and health checks
 

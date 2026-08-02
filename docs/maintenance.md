@@ -157,6 +157,12 @@ dns-sd -B _terminal-harbor._tcp local
 mDNS再発見を確認します。mDNS候補は署名済み`/v1/identity`の`server_id`が保存値と
 一致した場合だけ利用されます。
 
+モバイルAPI契約を変更した場合はdesktopを先に配備し、GUIを保持再起動してから
+mobileを更新します。workspace作成対応では、mobileから`POST /v1/workspaces`を使い、
+選択中rootの既定値とMac上の既存absolute pathの両方で作成・activate・一覧更新を
+確認します。relative pathまたは存在しないpathは`400`で回復可能に失敗し、既存の
+workspaceやpairingを削除してはいけません。
+
 HMAC要求はMacとphoneの時計差が5分を超えると拒否されます。全endpointで同時に
 認証失敗する場合は、秘密情報を表示する前に時計、`client_id`の存続、desktop/mobile
 の配備順を確認します。nonce replay cacheはプロセス内状態なので、再起動を認証回避

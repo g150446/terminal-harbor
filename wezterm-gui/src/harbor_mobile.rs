@@ -645,6 +645,7 @@ fn write_response(stream: &mut TcpStream, response: HttpResponse) -> anyhow::Res
     let status = response.status;
     let reason = match status {
         200 => "OK",
+        201 => "Created",
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
@@ -798,6 +799,21 @@ fn dispatch(
         return match run_on_main(list_workspaces_json) {
             Ok(json) => finish(200, json),
             Err(err) => finish(500, json_error(&format!("{err:#}"))),
+        };
+    }
+
+    if method == "POST" && path == "/v1/workspaces" {
+        #[derive(Deserialize)]
+        struct CreateWorkspaceBody {
+            root: Option<String>,
+        }
+        let parsed: CreateWorkspaceBody = match serde_json::from_slice(body) {
+            Ok(value) => value,
+            Err(_) => return finish(400, json_error("invalid json body")),
+        };
+        return match run_on_main(move || create_workspace(parsed.root)) {
+            Ok(json) => finish(201, json),
+            Err(err) => finish(400, json_error(&format!("{err:#}"))),
         };
     }
 
@@ -1049,6 +1065,44 @@ fn list_workspaces_json() -> anyhow::Result<String> {
     Ok(serde_json::json!({ "workspaces": workspaces }).to_string())
 }
 
+fn create_workspace(requested_root: Option<String>) -> anyhow::Result<String> {
+    let root = match requested_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|root| !root.is_empty())
+    {
+        Some(root) => PathBuf::from(root),
+        None => harbor_workspace::rows()
+            .into_iter()
+            .find(|row| row.selected)
+            .and_then(|row| row.workspace.root)
+            .or_else(dirs_next::home_dir)
+            .ok_or_else(|| anyhow!("no default workspace directory is available"))?,
+    };
+    if !root.is_absolute() {
+        anyhow::bail!("workspace directory must be an absolute path");
+    }
+    let root = fs::canonicalize(&root)
+        .with_context(|| format!("workspace directory is unavailable: {}", root.display()))?;
+    if !root.is_dir() {
+        anyhow::bail!("workspace directory is not a directory: {}", root.display());
+    }
+
+    let workspace = harbor_workspace::create_from_path(root);
+    activate_workspace(&workspace.id.to_string())?;
+    Ok(serde_json::json!({
+        "id": workspace.id,
+        "name": workspace.name,
+        "root": workspace.root.as_ref().map(|path| path.display().to_string()),
+        "mux_workspace": workspace.mux_workspace,
+        "activity": "idle",
+        "process": null,
+        "message": null,
+        "selected": true,
+    })
+    .to_string())
+}
+
 fn find_workspace(id: &str) -> anyhow::Result<harbor_workspace::HarborWorkspace> {
     let uuid = Uuid::parse_str(id).context("invalid workspace id")?;
     harbor_workspace::workspaces()
@@ -1272,6 +1326,12 @@ mod tests {
     fn session_names_are_non_empty() {
         assert!(!device_name().is_empty());
         assert!(!host_name().is_empty());
+    }
+
+    #[test]
+    fn workspace_creation_rejects_relative_directories() {
+        let error = create_workspace(Some("relative/project".to_string())).unwrap_err();
+        assert!(error.to_string().contains("absolute path"));
     }
 
     #[test]

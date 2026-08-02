@@ -101,11 +101,12 @@ Terminal Harbor can be controlled from the companion Flutter app
 1. Start Terminal Harbor (the mobile bridge listens on LAN port `7780`).
 2. In the Harbor sidebar, click **Pair mobile**. A square QR image opens in your
    image viewer and the pair URI is copied to the clipboard.
-3. Scan the QR code with the mobile app (same Wi‑Fi), or paste the URI into the
-   app's **Manual** entry. The URI encodes a short-lived
-   `harbor://pair?...` token; the app exchanges it for a device token.
-4. From the phone: list workspaces, switch the active workspace, mirror the
-   active pane’s screen (last 60 lines, refreshed every second), and send
+3. Scan the QR code with the mobile app over Tailscale or the same local
+   network, or paste the URI into the app's **Manual** entry. The URI encodes a
+   short-lived `harbor://pair?...` token; the app exchanges it for a device token.
+4. From the phone: create workspaces for desktop directories, list and switch
+   workspaces, mirror the active pane’s screen (last 60 lines, refreshed every
+   second), and send
    instruction text to the workspace’s active pane — Send also delivers a real
    Enter key event so shells and AI agents execute the line.
 
