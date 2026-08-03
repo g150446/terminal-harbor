@@ -28,7 +28,7 @@ use window::WindowOps;
 
 pub const DEFAULT_PORT: u16 = 7780;
 const PAIR_TOKEN_TTL: Duration = Duration::from_secs(5 * 60);
-const API_VERSION: &str = "1.1.0";
+const API_VERSION: &str = "1.2.0";
 const AUTH_VERSION: &str = "hmac-sha256-v1";
 const AUTH_CLOCK_SKEW_SECS: u64 = 5 * 60;
 const REPLAY_TTL_SECS: u64 = 10 * 60;
@@ -924,6 +924,31 @@ fn dispatch(
 
     if let Some(id) = path
         .strip_prefix("/v1/workspaces/")
+        .and_then(|rest| rest.strip_suffix("/key"))
+    {
+        if method == "POST" {
+            #[derive(Deserialize)]
+            struct KeyBody {
+                key: String,
+            }
+            let parsed: KeyBody = match serde_json::from_slice(body) {
+                Ok(value) => value,
+                Err(_) => return finish(400, json_error("invalid json body")),
+            };
+            let key = match terminal_key_code(&parsed.key) {
+                Some(key) => key,
+                None => return finish(400, json_error("unsupported terminal key")),
+            };
+            let id = id.to_string();
+            return match run_on_main(move || send_terminal_key(&id, key)) {
+                Ok(()) => finish(200, serde_json::json!({"ok": true}).to_string()),
+                Err(err) => workspace_error(err),
+            };
+        }
+    }
+
+    if let Some(id) = path
+        .strip_prefix("/v1/workspaces/")
         .and_then(|rest| rest.strip_suffix("/instruction"))
     {
         if method == "POST" {
@@ -1402,6 +1427,20 @@ fn send_instruction(id: &str, text: &str, submit: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn terminal_key_code(key: &str) -> Option<KeyCode> {
+    match key {
+        "up" => Some(KeyCode::UpArrow),
+        "down" => Some(KeyCode::DownArrow),
+        _ => None,
+    }
+}
+
+fn send_terminal_key(id: &str, key: KeyCode) -> anyhow::Result<()> {
+    let workspace = find_workspace(id)?;
+    workspace_active_pane(&workspace)?.key_down(key, KeyModifiers::NONE)?;
+    Ok(())
+}
+
 /// Render the last `nlines` lines of the workspace's active pane as plain
 /// text so the mobile app can mirror the terminal screen.
 fn screen_text(id: &str, nlines: usize) -> anyhow::Result<String> {
@@ -1591,6 +1630,17 @@ mod tests {
         assert!(img.width() >= 360);
         assert_eq!(img.width(), img.height());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn terminal_navigation_keys_are_explicitly_limited() {
+        assert!(matches!(terminal_key_code("up"), Some(KeyCode::UpArrow)));
+        assert!(matches!(
+            terminal_key_code("down"),
+            Some(KeyCode::DownArrow)
+        ));
+        assert!(terminal_key_code("enter").is_none());
+        assert!(terminal_key_code("escape").is_none());
     }
 }
 

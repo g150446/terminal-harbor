@@ -169,6 +169,14 @@ tab/workspace lifecycle APIの受け入れ確認には、破棄可能なworkspac
 表示されることを確認します。DELETE要求は認証に加えてbodyの`confirm: true`が必須
 です。実運用workspaceをテスト対象にせず、終了したprocessは復元不能として扱います。
 
+input APIの受け入れ確認では、空のinstructionと`submit: true`でEnterだけが送信される
+こと、`POST /v1/workspaces/{id}/key`の`up`/`down`がshell履歴または対話アプリを移動
+させることを確認します。矢印キーを固定escape sequenceとして送らず、terminalのkeyboard
+protocolに従う`pane.key_down`を維持します。未知のkey名は`400`で拒否します。
+key endpointを使うmobileより先にAPI version 1.2.0以上のdesktopを配備し、
+session-preserving restart後にport 7780のlistenを確認します。旧desktopでの`404`は
+pairing不良ではないため、credential削除や再pairingを行わずdesktop更新で復旧します。
+
 HMAC要求はMacとphoneの時計差が5分を超えると拒否されます。全endpointで同時に
 認証失敗する場合は、秘密情報を表示する前に時計、`client_id`の存続、desktop/mobile
 の配備順を確認します。nonce replay cacheはプロセス内状態なので、再起動を認証回避

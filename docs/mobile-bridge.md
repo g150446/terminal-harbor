@@ -96,6 +96,7 @@ Full contract: `openapi/harbor-mobile.yaml` in the mobile repo.
 | DELETE | `/v1/workspaces/{id}/tabs/{tabId}` | Confirmed close of a non-final tab and all panes |
 | POST | `/v1/workspaces/{id}/activate` | Switch active workspace |
 | POST | `/v1/workspaces/{id}/instruction` | Body `{text, submit=true}` |
+| POST | `/v1/workspaces/{id}/key` | Send an allowlisted `up` or `down` terminal key |
 | GET | `/v1/workspaces/{id}/screen?lines=N` | Plain-text screen mirror, N=1..200, default 60 |
 
 `POST /v1/workspaces` accepts `{}` or `{"root":"/absolute/desktop/path"}`.
@@ -140,6 +141,10 @@ user selects them; no background discovery is performed.
 
 `submit: true` sends the text via `pane.send_paste()` and then **Enter as a
 real key event** via `pane.key_down(KeyCode::Enter, KeyModifiers::NONE)`.
+An empty `text` with `submit=true` is valid and sends Enter without pasting.
+Up and Down use the separate `/key` endpoint and are also delivered through
+`pane.key_down`, preserving terminal keyboard protocol handling. API version
+1.2.0 introduced this endpoint.
 This lets the terminal encode Enter for the active keyboard protocol; a fixed
 CR can be ignored when an application has enabled CSI-u/Kitty key encoding.
 
