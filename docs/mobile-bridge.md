@@ -98,6 +98,7 @@ Full contract: `openapi/harbor-mobile.yaml` in the mobile repo.
 | POST | `/v1/workspaces/{id}/instruction` | Body `{text, submit=true}` |
 | POST | `/v1/workspaces/{id}/key` | Send an allowlisted `up` or `down` terminal key |
 | GET | `/v1/workspaces/{id}/screen?lines=N` | Plain-text screen mirror, N=1..200, default 60 |
+| GET | `/v1/workspaces/{id}/speech/hints` | Up to 96 contextual terms for one-shot Android speech recognition |
 
 `POST /v1/workspaces` accepts `{}` or `{"root":"/absolute/desktop/path"}`.
 Blank or absent `root` uses the selected workspace root, then the desktop home
@@ -151,6 +152,17 @@ CR can be ignored when an application has enabled CSI-u/Kitty key encoding.
 Do **not** append `\r` to the pasted payload: shells and AI agents with
 bracketed-paste mode treat a CR inside a paste as a literal insertion and
 never execute the line. This was a real bug; keep the two steps separate.
+
+### Contextual speech hints
+
+API version 1.3.0 adds `/speech/hints`. The bridge ranks the workspace and
+agent names, active working-directory components, directory entries up to depth
+three, and technical identifiers from the active pane's last 160 rendered
+lines. It returns only bounded terms and generated spoken forms, never the full
+conversation or file contents. Hidden/generated directories, IP addresses,
+pairing data, hashes, and secret-shaped values are excluded. Mux capture stays
+on the GUI thread; the bounded filesystem walk runs after `run_on_main`
+returns. Do not add the returned hints to production logs.
 
 ### Screen endpoint implementation
 

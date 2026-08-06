@@ -2,33 +2,36 @@
 
 use crate::harbor_workspace::{self, WorkspaceActivity};
 use crate::termwindow::TermWindowNotif;
-use anyhow::{anyhow, Context};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use anyhow::{Context, anyhow};
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use config::keyassignment::SpawnTabDomain;
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use mux::Mux;
+use mux::pane::CachePolicy;
 use parking_lot::Mutex;
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{fs, thread};
 use uuid::Uuid;
+use walkdir::{DirEntry, WalkDir};
 use wezterm_term::{KeyCode, KeyModifiers};
 use window::WindowOps;
 
 pub const DEFAULT_PORT: u16 = 7780;
 const PAIR_TOKEN_TTL: Duration = Duration::from_secs(5 * 60);
-const API_VERSION: &str = "1.2.0";
+const API_VERSION: &str = "1.3.0";
 const AUTH_VERSION: &str = "hmac-sha256-v1";
 const AUTH_CLOCK_SKEW_SECS: u64 = 5 * 60;
 const REPLAY_TTL_SECS: u64 = 10 * 60;
@@ -93,6 +96,12 @@ struct BridgeInner {
 }
 
 lazy_static::lazy_static! {
+    static ref SPEECH_TERM_RE: Regex = Regex::new(
+        r"(?:[A-Za-z0-9_@.+-]+/)+[A-Za-z0-9_@.+-]+|[A-Za-z][A-Za-z0-9_@.+/-]{2,}"
+    ).expect("valid speech term regex");
+    static ref QUOTED_SPEECH_TERM_RE: Regex = Regex::new(
+        r#"[`\"']([^`\"'\r\n]{2,64})[`\"']"#
+    ).expect("valid quoted speech term regex");
     static ref INNER: Mutex<BridgeInner> = Mutex::new(BridgeInner {
         server_id: String::new(),
         port: DEFAULT_PORT,
@@ -690,11 +699,7 @@ fn confirmed_destructive_request(body: &[u8]) -> bool {
 fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
     query.split('&').find_map(|pair| {
         let (k, v) = pair.split_once('=')?;
-        if k == key {
-            Some(v)
-        } else {
-            None
-        }
+        if k == key { Some(v) } else { None }
     })
 }
 
@@ -976,6 +981,19 @@ fn dispatch(
                         finish(500, json_error(&msg))
                     }
                 }
+            };
+        }
+    }
+
+    if let Some(id) = path
+        .strip_prefix("/v1/workspaces/")
+        .and_then(|rest| rest.strip_suffix("/speech/hints"))
+    {
+        if method == "GET" {
+            let id = id.to_string();
+            return match run_on_main(move || speech_hint_context(&id)) {
+                Ok(context) => finish(200, speech_hints_json(context)),
+                Err(err) => workspace_error(err),
             };
         }
     }
@@ -1441,12 +1459,255 @@ fn send_terminal_key(id: &str, key: KeyCode) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Render the last `nlines` lines of the workspace's active pane as plain
-/// text so the mobile app can mirror the terminal screen.
-fn screen_text(id: &str, nlines: usize) -> anyhow::Result<String> {
+#[derive(Debug)]
+struct SpeechHintContext {
+    workspace_name: String,
+    root: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+    agent_name: Option<String>,
+    conversation: String,
+}
+
+fn speech_hint_context(id: &str) -> anyhow::Result<SpeechHintContext> {
     let workspace = find_workspace(id)?;
     let pane = workspace_active_pane(&workspace)?;
+    let vars = pane.copy_user_vars();
+    let cwd = pane
+        .get_current_working_dir(CachePolicy::AllowStale)
+        .and_then(|url| url.to_file_path().ok());
+    let agent_name = vars.get("TH_AGENT_NAME").cloned().or_else(|| {
+        pane.get_foreground_process_name(CachePolicy::AllowStale)
+            .and_then(|name| {
+                Path::new(&name)
+                    .file_name()
+                    .map(|part| part.to_string_lossy().into_owned())
+            })
+    });
+    Ok(SpeechHintContext {
+        workspace_name: workspace.name,
+        root: workspace.root,
+        cwd,
+        agent_name,
+        conversation: pane_text(&pane, 160),
+    })
+}
 
+fn speech_hints_json(context: SpeechHintContext) -> String {
+    let mut scores = HashMap::<String, i32>::new();
+    add_speech_candidate(&mut scores, &context.workspace_name, 100, false);
+    if let Some(agent) = &context.agent_name {
+        add_speech_candidate(&mut scores, agent, 110, false);
+    }
+    if let Some(root) = &context.root {
+        add_path_components(&mut scores, root, 85);
+        collect_directory_candidates(&mut scores, root);
+    }
+    if let Some(cwd) = &context.cwd {
+        add_path_components(&mut scores, cwd, 95);
+    }
+    collect_conversation_candidates(&mut scores, &context.conversation);
+
+    let mut ranked: Vec<_> = scores.into_iter().collect();
+    ranked.sort_by(|(left_term, left_score), (right_term, right_score)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left_term.to_lowercase().cmp(&right_term.to_lowercase()))
+    });
+
+    let mut hints = Vec::new();
+    let mut seen = HashSet::new();
+    for (term, _) in ranked {
+        push_unique_hint(&mut hints, &mut seen, term.clone());
+        if let Some(spoken) = spoken_form(&term) {
+            push_unique_hint(&mut hints, &mut seen, spoken);
+        }
+        if let Some(alias) = fixed_spoken_alias(&term) {
+            push_unique_hint(&mut hints, &mut seen, alias.to_string());
+        }
+        if hints.len() >= 96 {
+            hints.truncate(96);
+            break;
+        }
+    }
+
+    serde_json::json!({
+        "hints": hints,
+        "source": "workspace_context_v1",
+    })
+    .to_string()
+}
+
+fn push_unique_hint(hints: &mut Vec<String>, seen: &mut HashSet<String>, hint: String) {
+    let normalized = hint.trim().to_string();
+    if normalized.len() < 2 || normalized.len() > 64 {
+        return;
+    }
+    if seen.insert(normalized.to_lowercase()) {
+        hints.push(normalized);
+    }
+}
+
+fn add_path_components(scores: &mut HashMap<String, i32>, path: &Path, score: i32) {
+    for component in path.components().rev().take(3) {
+        add_speech_candidate(
+            scores,
+            &component.as_os_str().to_string_lossy(),
+            score,
+            false,
+        );
+    }
+}
+
+fn include_directory_entry(entry: &DirEntry) -> bool {
+    if entry.depth() == 0 {
+        return true;
+    }
+    let name = entry.file_name().to_string_lossy();
+    !name.starts_with('.')
+        && !matches!(
+            name.as_ref(),
+            "build" | "node_modules" | "target" | "vendor" | "Pods" | "ephemeral" | "DerivedData"
+        )
+}
+
+fn collect_directory_candidates(scores: &mut HashMap<String, i32>, root: &Path) {
+    for entry in WalkDir::new(root)
+        .max_depth(3)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(include_directory_entry)
+        .filter_map(Result::ok)
+        .skip(1)
+        .take(400)
+    {
+        let score = 55 - (entry.depth() as i32 * 6);
+        add_speech_candidate(scores, &entry.file_name().to_string_lossy(), score, false);
+    }
+}
+
+fn collect_conversation_candidates(scores: &mut HashMap<String, i32>, conversation: &str) {
+    for (line_index, line) in conversation.lines().rev().take(160).enumerate() {
+        let recency = 60 - (line_index as i32 / 8).min(20);
+        for captures in QUOTED_SPEECH_TERM_RE.captures_iter(line) {
+            if let Some(term) = captures.get(1) {
+                add_speech_candidate(scores, term.as_str(), recency + 15, true);
+            }
+        }
+        for term in SPEECH_TERM_RE.find_iter(line) {
+            add_speech_candidate(scores, term.as_str(), recency, true);
+        }
+    }
+}
+
+fn add_speech_candidate(
+    scores: &mut HashMap<String, i32>,
+    raw: &str,
+    score: i32,
+    require_technical_shape: bool,
+) {
+    let raw = raw
+        .trim_matches(|ch: char| ch.is_whitespace() || ",:;()[]{}<>!?".contains(ch))
+        .trim();
+    // Paths can reveal private topology and are poor spoken phrases. Keep only
+    // the final component; the directory walk adds nearby names independently.
+    let term = raw
+        .rsplit('/')
+        .find(|component| !component.is_empty())
+        .unwrap_or(raw);
+    if term.len() < 2
+        || term.len() > 64
+        || is_sensitive_speech_candidate(term)
+        || (require_technical_shape && !has_technical_shape(term))
+    {
+        return;
+    }
+    *scores.entry(term.to_string()).or_default() += score;
+}
+
+fn has_technical_shape(term: &str) -> bool {
+    let mut saw_lower = false;
+    let mut saw_upper_after_lower = false;
+    for ch in term.chars() {
+        if ch.is_ascii_lowercase() {
+            saw_lower = true;
+        } else if saw_lower && ch.is_ascii_uppercase() {
+            saw_upper_after_lower = true;
+        }
+    }
+    saw_upper_after_lower
+        || term.chars().any(|ch| ch.is_ascii_digit())
+        || term.contains(['_', '-', '.', '/', '+', '@'])
+        || matches!(
+            term.to_ascii_lowercase().as_str(),
+            "codex"
+                | "claude"
+                | "flutter"
+                | "dart"
+                | "rust"
+                | "cargo"
+                | "git"
+                | "adb"
+                | "tailscale"
+                | "openrouter"
+        )
+}
+
+fn is_sensitive_speech_candidate(term: &str) -> bool {
+    let lower = term.to_ascii_lowercase();
+    if lower.contains("sk-")
+        || lower.starts_with("ghp_")
+        || lower.contains("bearer")
+        || lower.contains("harbor://pair")
+        || term.parse::<std::net::IpAddr>().is_ok()
+    {
+        return true;
+    }
+    let compact: String = term
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect();
+    if compact.len() >= 24 && compact.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return true;
+    }
+    (compact.len() >= 32
+        && compact.chars().any(|ch| ch.is_ascii_digit())
+        && compact.chars().any(|ch| ch.is_ascii_alphabetic()))
+        || compact.len() >= 40
+}
+
+fn spoken_form(term: &str) -> Option<String> {
+    let mut result = String::new();
+    let chars: Vec<_> = term.chars().collect();
+    for (index, ch) in chars.iter().copied().enumerate() {
+        let separator = matches!(ch, '_' | '-' | '.' | '/' | '+');
+        let camel_boundary =
+            index > 0 && ch.is_ascii_uppercase() && chars[index - 1].is_ascii_lowercase();
+        if separator || camel_boundary {
+            if !result.ends_with(' ') && !result.is_empty() {
+                result.push(' ');
+            }
+            if separator {
+                continue;
+            }
+        }
+        result.push(ch);
+    }
+    let spoken = result.split_whitespace().collect::<Vec<_>>().join(" ");
+    (spoken != term && spoken.len() >= 2).then_some(spoken)
+}
+
+fn fixed_spoken_alias(term: &str) -> Option<&'static str> {
+    match term.to_ascii_lowercase().as_str() {
+        "codex" => Some("コーデックス"),
+        "flutter" => Some("フラッター"),
+        "tailscale" => Some("テールスケール"),
+        "openrouter" => Some("オープンルーター"),
+        "terminal-harbor" | "terminal harbor" => Some("ターミナルハーバー"),
+        _ => None,
+    }
+}
+
+fn pane_text(pane: &std::sync::Arc<dyn mux::pane::Pane>, nlines: usize) -> String {
     let dims = pane.get_dimensions();
     let bottom_row = dims.physical_top + dims.viewport_rows as isize;
     let top_row = bottom_row.saturating_sub(nlines as isize);
@@ -1459,6 +1720,16 @@ fn screen_text(id: &str, nlines: usize) -> anyhow::Result<String> {
     }
     let trimmed = text.trim_end().len();
     text.truncate(trimmed);
+    text
+}
+
+/// Render the last `nlines` lines of the workspace's active pane as plain
+/// text so the mobile app can mirror the terminal screen.
+fn screen_text(id: &str, nlines: usize) -> anyhow::Result<String> {
+    let workspace = find_workspace(id)?;
+    let pane = workspace_active_pane(&workspace)?;
+
+    let text = pane_text(&pane, nlines);
 
     Ok(serde_json::json!({
         "text": text,
@@ -1641,6 +1912,40 @@ mod tests {
         ));
         assert!(terminal_key_code("enter").is_none());
         assert!(terminal_key_code("escape").is_none());
+    }
+
+    #[test]
+    fn speech_candidates_extract_recent_technical_terms_and_drop_secrets() {
+        let mut scores = HashMap::new();
+        collect_conversation_candidates(
+            &mut scores,
+            "Use HarborApiClient and client_test.dart\n\
+             Update /Users/private/project/lib/client.dart\n\
+             Run flutter analyze after sk-secret1234567890",
+        );
+        assert!(scores.contains_key("HarborApiClient"));
+        assert!(scores.contains_key("client_test.dart"));
+        assert!(scores.contains_key("flutter"));
+        assert!(scores.contains_key("client.dart"));
+        assert!(!scores.keys().any(|term| term.contains("/Users/")));
+        assert!(!scores.keys().any(|term| term.starts_with("sk-")));
+        assert!(!scores.contains_key("after"));
+        assert!(is_sensitive_speech_candidate(
+            "AbCdEfGhIjKlMnOpQrStUvWxYz_1234567890"
+        ));
+    }
+
+    #[test]
+    fn speech_candidates_create_spoken_identifier_forms() {
+        assert_eq!(
+            spoken_form("HarborApiClient").as_deref(),
+            Some("Harbor Api Client")
+        );
+        assert_eq!(
+            spoken_form("client_test.dart").as_deref(),
+            Some("client test dart")
+        );
+        assert_eq!(fixed_spoken_alias("Codex"), Some("コーデックス"));
     }
 }
 
