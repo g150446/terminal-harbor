@@ -117,6 +117,9 @@ cargo +stable build --release \
 配置します。terminfoは`termwiz/data/wezterm.terminfo`から`tic -x`でステージング
 先へ生成します。バイナリを必要に応じて`strip`した後にバンドル全体を署名し、
 署名検証が成功した完成品だけを`/Applications/Terminal Harbor.app`へ入れ替えます。
+雛形に旧ANGLEライブラリなどのトップレベルdylibが残っていると、現在の実行ファイルが
+参照していなくてもstrict署名検証を失敗させることがあります。`otool -L`で依存関係を
+確認し、配布バイナリが参照しない旧ライブラリを完成バンドルへ混入させないでください。
 
 配置後は次を記録します。
 
@@ -162,6 +165,11 @@ mobileを更新します。workspace作成対応では、mobileから`POST /v1/w
 選択中rootの既定値とMac上の既存absolute pathの両方で作成・activate・一覧更新を
 確認します。relative pathまたは存在しないpathは`400`で回復可能に失敗し、既存の
 workspaceやpairingを削除してはいけません。
+
+画面履歴APIの`lines`はdesktopで1〜500行に制限し、mobileは通常300行を1秒ごとに
+要求します。上限変更時はdesktop実装、mobile側OpenAPI、画面要求値、widget test、
+両リポジトリの運用文書を同じリリース組で更新してください。500行を超えて増やす前に、
+応答サイズ、1秒pollingの通信量、Androidのテキストlayoutとスクロール応答を計測します。
 
 tab/workspace lifecycle APIの受け入れ確認には、破棄可能なworkspaceを使います。
 2つ目のtabを作成して切替後、non-final tabだけをcloseできること、final tabのcloseが
