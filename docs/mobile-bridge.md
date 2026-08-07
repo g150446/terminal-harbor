@@ -97,7 +97,7 @@ Full contract: `openapi/harbor-mobile.yaml` in the mobile repo.
 | POST | `/v1/workspaces/{id}/activate` | Switch active workspace |
 | POST | `/v1/workspaces/{id}/instruction` | Body `{text, submit=true}` |
 | POST | `/v1/workspaces/{id}/key` | Send an allowlisted `up` or `down` terminal key |
-| GET | `/v1/workspaces/{id}/screen?lines=N` | Plain-text screen mirror, N=1..500, default 60 |
+| GET | `/v1/workspaces/{id}/screen?lines=N` | Plain-text screen mirror, N=1..5000, default 60 |
 | GET | `/v1/workspaces/{id}/speech/hints` | Up to 96 contextual terms for one-shot Android speech recognition |
 
 `POST /v1/workspaces` accepts `{}` or `{"root":"/absolute/desktop/path"}`.
@@ -261,8 +261,9 @@ then `window.set_window_position(ScreenPoint)` is applied post-creation.
 ## Mobile app essentials (see mobile repo `docs/development.md`)
 
 - Package id: `ai.terminalharbor.terminal_harbor_mobile`
-- Screen mirror: 1s `Timer.periodic` polling of `/screen` (last 300 lines,
-  plain text, monospace, auto-scroll only when near the bottom).
+- Screen mirror: 1s `Timer.periodic` polling of `/screen` (last 2000 lines,
+  plain text, monospace, jumps to the bottom on the first load and afterwards
+  auto-scrolls only when near the bottom).
 - Instruction input: `Focus(onKeyEvent:)` intercepts Enter with an
   IME-composition guard (Japanese input: 1st Enter confirms conversion,
   2nd Enter sends), plus `TextInputAction.done` for the software keyboard.
