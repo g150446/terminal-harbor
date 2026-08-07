@@ -940,12 +940,12 @@ fn dispatch(
                 Ok(value) => value,
                 Err(_) => return finish(400, json_error("invalid json body")),
             };
-            let key = match terminal_key_code(&parsed.key) {
-                Some(key) => key,
+            let (key, mods) = match terminal_key_code(&parsed.key) {
+                Some(mapping) => mapping,
                 None => return finish(400, json_error("unsupported terminal key")),
             };
             let id = id.to_string();
-            return match run_on_main(move || send_terminal_key(&id, key)) {
+            return match run_on_main(move || send_terminal_key(&id, key, mods)) {
                 Ok(()) => finish(200, serde_json::json!({"ok": true}).to_string()),
                 Err(err) => workspace_error(err),
             };
@@ -1445,17 +1445,23 @@ fn send_instruction(id: &str, text: &str, submit: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn terminal_key_code(key: &str) -> Option<KeyCode> {
+fn terminal_key_code(key: &str) -> Option<(KeyCode, KeyModifiers)> {
     match key {
-        "up" => Some(KeyCode::UpArrow),
-        "down" => Some(KeyCode::DownArrow),
+        "up" => Some((KeyCode::UpArrow, KeyModifiers::NONE)),
+        "down" => Some((KeyCode::DownArrow, KeyModifiers::NONE)),
+        // KeyCode has no Escape variant; it is spelled as the raw control byte
+        // so the terminal can encode it for its active keyboard protocol.
+        "escape" => Some((KeyCode::Char('\u{1b}'), KeyModifiers::NONE)),
+        // Send the letter with CTRL held rather than a pre-encoded 0x03 so the
+        // terminal derives the right sequence under CSI-u/Kitty keyboards too.
+        "ctrl-c" => Some((KeyCode::Char('c'), KeyModifiers::CTRL)),
         _ => None,
     }
 }
 
-fn send_terminal_key(id: &str, key: KeyCode) -> anyhow::Result<()> {
+fn send_terminal_key(id: &str, key: KeyCode, mods: KeyModifiers) -> anyhow::Result<()> {
     let workspace = find_workspace(id)?;
-    workspace_active_pane(&workspace)?.key_down(key, KeyModifiers::NONE)?;
+    workspace_active_pane(&workspace)?.key_down(key, mods)?;
     Ok(())
 }
 
@@ -1905,13 +1911,24 @@ mod tests {
 
     #[test]
     fn terminal_navigation_keys_are_explicitly_limited() {
-        assert!(matches!(terminal_key_code("up"), Some(KeyCode::UpArrow)));
+        assert!(matches!(
+            terminal_key_code("up"),
+            Some((KeyCode::UpArrow, KeyModifiers::NONE))
+        ));
         assert!(matches!(
             terminal_key_code("down"),
-            Some(KeyCode::DownArrow)
+            Some((KeyCode::DownArrow, KeyModifiers::NONE))
+        ));
+        assert!(matches!(
+            terminal_key_code("escape"),
+            Some((KeyCode::Char('\u{1b}'), KeyModifiers::NONE))
+        ));
+        assert!(matches!(
+            terminal_key_code("ctrl-c"),
+            Some((KeyCode::Char('c'), KeyModifiers::CTRL))
         ));
         assert!(terminal_key_code("enter").is_none());
-        assert!(terminal_key_code("escape").is_none());
+        assert!(terminal_key_code("ctrl-d").is_none());
     }
 
     #[test]
