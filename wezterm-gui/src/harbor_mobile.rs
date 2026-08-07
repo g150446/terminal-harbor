@@ -1713,20 +1713,33 @@ fn fixed_spoken_alias(term: &str) -> Option<&'static str> {
     }
 }
 
+/// Join already right-trimmed terminal rows, dropping the blank rows at both
+/// ends. Full-screen programs repaint by clearing rows, so a requested window
+/// can begin with a long run of empty rows; mirroring those verbatim makes the
+/// mobile pane look blank until the reader scrolls past them.
+fn join_pane_rows(rows: &[String]) -> String {
+    let start = rows.iter().position(|row| !row.is_empty());
+    let Some(start) = start else {
+        return String::new();
+    };
+    let end = rows
+        .iter()
+        .rposition(|row| !row.is_empty())
+        .map_or(start, |last| last + 1);
+    rows[start..end].join("\n")
+}
+
 fn pane_text(pane: &std::sync::Arc<dyn mux::pane::Pane>, nlines: usize) -> String {
     let dims = pane.get_dimensions();
     let bottom_row = dims.physical_top + dims.viewport_rows as isize;
     let top_row = bottom_row.saturating_sub(nlines as isize);
     let (_first_row, lines) = pane.get_lines(top_row..bottom_row);
 
-    let mut text = String::new();
-    for line in lines {
-        text.push_str(line.as_str().trim_end());
-        text.push('\n');
-    }
-    let trimmed = text.trim_end().len();
-    text.truncate(trimmed);
-    text
+    let rows: Vec<String> = lines
+        .iter()
+        .map(|line| line.as_str().trim_end().to_string())
+        .collect();
+    join_pane_rows(&rows)
 }
 
 /// Render the last `nlines` lines of the workspace's active pane as plain
@@ -1907,6 +1920,20 @@ mod tests {
         assert!(img.width() >= 360);
         assert_eq!(img.width(), img.height());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn mirrored_rows_drop_blank_padding_at_both_ends() {
+        let rows: Vec<String> = ["", "", "prompt", "", "output", "", ""]
+            .iter()
+            .map(|row| row.to_string())
+            .collect();
+        // Interior blank rows are real terminal content and must survive.
+        assert_eq!(join_pane_rows(&rows), "prompt\n\noutput");
+
+        let blank: Vec<String> = vec![String::new(); 4];
+        assert_eq!(join_pane_rows(&blank), "");
+        assert_eq!(join_pane_rows(&[]), "");
     }
 
     #[test]

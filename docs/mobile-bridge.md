@@ -174,8 +174,15 @@ let dims = pane.get_dimensions();
 let bottom_row = dims.physical_top + dims.viewport_rows as isize;
 let top_row = bottom_row.saturating_sub(nlines as isize);
 let (_first_row, lines) = pane.get_lines(top_row..bottom_row);
-// per line: line.as_str().trim_end() + '\n', then trim_end() the whole text
+// per line: line.as_str().trim_end(), then join_pane_rows drops the blank
+// rows at both ends and joins the rest with '\n'
 ```
+
+Blank rows are dropped at both ends because a full-screen program repaints by
+clearing rows, so a requested window can start with a long run of empty rows.
+Mirroring those verbatim made the mobile pane render as a blank black area
+until the reader scrolled past them. Interior blank rows are real content and
+are preserved.
 
 Response: `{"text": ..., "lines": N, "alt_screen": bool}`.
 All mux access goes through `run_on_main` (see below).
