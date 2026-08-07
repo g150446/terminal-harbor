@@ -261,7 +261,8 @@ then `window.set_window_position(ScreenPoint)` is applied post-creation.
 ## Mobile app essentials (see mobile repo `docs/development.md`)
 
 - Package id: `ai.terminalharbor.terminal_harbor_mobile`
-- Screen mirror: 1s `Timer.periodic` polling of `/screen` (last 2000 lines,
+- Screen mirror: 1s `Timer.periodic` polling of `/screen` (last 3500 lines, matching the
+  `scrollback_lines` default,
   plain text, monospace, jumps to the bottom on the first load and afterwards
   auto-scrolls only when near the bottom).
 - Instruction input: `Focus(onKeyEvent:)` intercepts Enter with an
