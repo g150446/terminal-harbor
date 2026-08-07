@@ -1006,7 +1006,7 @@ fn dispatch(
             let lines = query_param(query, "lines")
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(60)
-                .clamp(1, 5000);
+                .clamp(1, 20000);
             let id = id.to_string();
             return match run_on_main(move || screen_text(&id, lines)) {
                 Ok(json) => finish(200, json),
