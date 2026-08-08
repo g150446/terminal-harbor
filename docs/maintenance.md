@@ -121,7 +121,7 @@ cargo +stable build --release \
 参照していなくてもstrict署名検証を失敗させることがあります。`otool -L`で依存関係を
 確認し、配布バイナリが参照しない旧ライブラリを完成バンドルへ混入させないでください。
 
-配置後は次を記録します。
+配置後は次を`docs/release-log.md`に追記します。
 
 - source commitとdirty treeの有無
 - Rust toolchain、ビルド日時、4バイナリのSHA-256

@@ -110,6 +110,11 @@ The command emits standard iTerm2-compatible user variables named
 `TH_AGENT_STATE`, `TH_AGENT_NAME`, and `TH_AGENT_MESSAGE`. Existing WezTerm
 configuration and CLI entry points remain compatible.
 
+`TH_PANE_PROCESS` is reserved. The session host sets it on each pane to relay
+the foreground process name to attached GUIs, which cannot inspect processes
+for panes the host owns. Do not publish it from an agent; use `--agent` to
+override the displayed name.
+
 ## Mobile pairing
 
 Terminal Harbor can be controlled from the companion Flutter app

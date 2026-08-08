@@ -29,3 +29,15 @@ incompatible.
 The first build that introduces persistent sessions cannot migrate terminals
 that were already owned by an older GUI process. Perform one complete restart;
 sessions opened by subsequent builds can then survive GUI restarts.
+
+## Releases that require a full restart
+
+Sidebar agent activity relies on the session host publishing `TH_PANE_PROCESS`
+(see [`harbor-sidebar.md`](harbor-sidebar.md)). That code lives in the mux
+server, so installing the bundle and running a preserving restart leaves the
+agent and task lines blank: the old host keeps running and never sends the
+variable. Run `wezterm restart --full` once after installing that build.
+
+This is the general rule rather than a one-off. Any release touching the mux
+server, the wire protocol, or process-inspection code must state the required
+restart mode, because a preserving restart silently keeps the old host.
