@@ -44,6 +44,10 @@ fn prepare_restart(full: bool) -> anyhow::Result<()> {
     }
 
     let result = (|| {
+        if full {
+            crate::harbor_workspace::snapshot_workspace_cwds()
+                .context("save workspace directories before complete restart")?;
+        }
         let wezterm = sibling_binary("wezterm")?;
         if !full {
             let status = Command::new(&wezterm)
@@ -109,6 +113,9 @@ pub fn restart_application(full: bool) -> anyhow::Result<()> {
 }
 
 pub fn shutdown_session_host() {
+    if let Err(err) = crate::harbor_workspace::snapshot_workspace_cwds() {
+        log::error!("saving workspace directories before shutdown: {err:#}");
+    }
     let path = wezterm_gui_subcommands::harbor_mux_pid_path();
     let Ok(text) = std::fs::read_to_string(&path) else {
         return;

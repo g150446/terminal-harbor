@@ -1,3 +1,4 @@
+use anyhow::Context;
 use mux::pane::CachePolicy;
 use mux::Mux;
 use parking_lot::Mutex;
@@ -7,8 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 const LEGACY_SCHEMA_VERSION: u32 = 1;
+const PREVIOUS_SCHEMA_VERSION: u32 = 2;
 /// Previous default before the mobile pairing UI needed more room.
 const LEGACY_SIDEBAR_DEFAULT_WIDTH: usize = 240;
 pub const SIDEBAR_DEFAULT_WIDTH: usize = 480;
@@ -19,6 +21,8 @@ pub struct HarborWorkspace {
     pub id: Uuid,
     pub name: String,
     pub root: Option<PathBuf>,
+    #[serde(default)]
+    pub last_cwd: Option<PathBuf>,
     pub mux_workspace: String,
     pub order: usize,
 }
@@ -223,11 +227,12 @@ fn load_if_needed(registry: &mut WorkspaceRegistry) {
     match serde_json::from_slice::<PersistedWorkspaceState>(&data) {
         Ok(mut state)
             if state.schema_version == SCHEMA_VERSION
+                || state.schema_version == PREVIOUS_SCHEMA_VERSION
                 || state.schema_version == LEGACY_SCHEMA_VERSION =>
         {
-            let mut migrated = state.schema_version == LEGACY_SCHEMA_VERSION;
-            if migrated {
-                migrate_legacy_workspaces(&mut state);
+            let mut migrated = state.schema_version != SCHEMA_VERSION;
+            if state.schema_version != SCHEMA_VERSION {
+                migrate_workspace_state(&mut state);
             }
             // Widen sidebars that still use the pre-pairing default.
             if state.sidebar_width == LEGACY_SIDEBAR_DEFAULT_WIDTH
@@ -253,16 +258,21 @@ fn load_if_needed(registry: &mut WorkspaceRegistry) {
     }
 }
 
-fn migrate_legacy_workspaces(state: &mut PersistedWorkspaceState) {
-    // Early development builds could persist multiple initial workspaces for
-    // the same directory. Keep the first entry for each root while preserving
-    // genuinely distinct project roots.
-    let mut seen_roots = HashSet::new();
-    state
-        .workspaces
-        .retain(|workspace| seen_roots.insert(workspace.root.clone()));
+fn migrate_workspace_state(state: &mut PersistedWorkspaceState) {
+    if state.schema_version == LEGACY_SCHEMA_VERSION {
+        // Early development builds could persist multiple initial workspaces for
+        // the same directory. Keep the first entry for each root while preserving
+        // genuinely distinct project roots.
+        let mut seen_roots = HashSet::new();
+        state
+            .workspaces
+            .retain(|workspace| seen_roots.insert(workspace.root.clone()));
+    }
     for (order, workspace) in state.workspaces.iter_mut().enumerate() {
         workspace.order = order;
+        if workspace.last_cwd.is_none() {
+            workspace.last_cwd.clone_from(&workspace.root);
+        }
     }
     state.schema_version = SCHEMA_VERSION;
 }
@@ -316,6 +326,7 @@ fn active_directory_for_workspace(mux: &Mux, workspace: &HarborWorkspace) -> Str
         .and_then(|tab| tab.get_active_pane())
         .and_then(|pane| pane_directory_name(&pane));
     active
+        .or_else(|| workspace.last_cwd.as_deref().and_then(directory_name))
         .or_else(|| workspace.root.as_deref().and_then(directory_name))
         .unwrap_or_else(|| "Session workspace".to_string())
 }
@@ -331,6 +342,86 @@ fn root_for_workspace(mux: &Mux, workspace: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn set_last_cwd(registry: &mut WorkspaceRegistry, mux_workspace: &str, cwd: PathBuf) -> bool {
+    let Some(workspace) = registry
+        .state
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.mux_workspace == mux_workspace)
+    else {
+        return false;
+    };
+    if workspace.last_cwd.as_ref() == Some(&cwd) {
+        return false;
+    }
+    workspace.last_cwd = Some(cwd);
+    true
+}
+
+pub fn record_active_pane_cwd(pane_id: mux::pane::PaneId) -> anyhow::Result<()> {
+    let mux = Mux::get();
+    let Some((_domain_id, window_id, tab_id)) = mux.resolve_pane_id(pane_id) else {
+        return Ok(());
+    };
+    let Some(tab) = mux.get_active_tab_for_window(window_id) else {
+        return Ok(());
+    };
+    if tab.tab_id() != tab_id
+        || tab
+            .get_active_pane()
+            .is_none_or(|pane| pane.pane_id() != pane_id)
+    {
+        return Ok(());
+    }
+    let Some(cwd) = mux.get_pane(pane_id).and_then(|pane| pane_root(&pane)) else {
+        return Ok(());
+    };
+    let Some(workspace) = mux
+        .get_window(window_id)
+        .map(|window| window.get_workspace().to_string())
+    else {
+        return Ok(());
+    };
+
+    let mut registry = REGISTRY.lock();
+    load_if_needed(&mut registry);
+    if set_last_cwd(&mut registry, &workspace, cwd) {
+        save(&registry).context("saving Terminal Harbor workspace working directory")?;
+    }
+    Ok(())
+}
+
+pub fn snapshot_workspace_cwds() -> anyhow::Result<()> {
+    let mux = Mux::get();
+    let observations: Vec<_> = workspaces()
+        .into_iter()
+        .filter_map(|workspace| {
+            root_for_workspace(&mux, &workspace.mux_workspace)
+                .map(|cwd| (workspace.mux_workspace, cwd))
+        })
+        .collect();
+    let mut registry = REGISTRY.lock();
+    load_if_needed(&mut registry);
+    let mut changed = false;
+    for (mux_workspace, cwd) in observations {
+        changed |= set_last_cwd(&mut registry, &mux_workspace, cwd);
+    }
+    if changed {
+        save(&registry).context("saving Terminal Harbor workspace working directories")?;
+    }
+    Ok(())
+}
+
+pub fn resume_cwd(workspace: &HarborWorkspace) -> Option<PathBuf> {
+    workspace
+        .last_cwd
+        .as_ref()
+        .filter(|path| path.is_dir())
+        .or_else(|| workspace.root.as_ref().filter(|path| path.is_dir()))
+        .cloned()
+        .or_else(dirs_next::home_dir)
 }
 
 fn unique_name(registry: &WorkspaceRegistry, base: &str) -> String {
@@ -393,6 +484,7 @@ pub fn ensure_current_workspace(mux_window_id: mux::window::WindowId) {
     registry.state.workspaces.push(HarborWorkspace {
         id: Uuid::new_v4(),
         name,
+        last_cwd: root.clone(),
         root,
         mux_workspace: active,
         order,
@@ -415,7 +507,8 @@ pub fn create_from_path(root: PathBuf) -> HarborWorkspace {
     let workspace = HarborWorkspace {
         id,
         name: name.clone(),
-        root: Some(root),
+        root: Some(root.clone()),
+        last_cwd: Some(root),
         mux_workspace: format!("harbor-{}-{name}", &id.simple().to_string()[..8]),
         order,
     };
@@ -701,6 +794,7 @@ mod tests {
             id: Uuid::new_v4(),
             name: name.to_string(),
             root: Some(PathBuf::from(root)),
+            last_cwd: None,
             mux_workspace: name.to_string(),
             order,
         };
@@ -715,14 +809,110 @@ mod tests {
             ],
         };
 
-        migrate_legacy_workspaces(&mut state);
+        migrate_workspace_state(&mut state);
 
         assert_eq!(state.schema_version, SCHEMA_VERSION);
         assert_eq!(state.workspaces.len(), 2);
         assert_eq!(state.workspaces[0].name, "home");
         assert_eq!(state.workspaces[0].order, 0);
+        assert_eq!(
+            state.workspaces[0].last_cwd,
+            Some(PathBuf::from("/Users/example"))
+        );
         assert_eq!(state.workspaces[1].name, "project");
         assert_eq!(state.workspaces[1].order, 1);
+    }
+
+    #[test]
+    fn previous_schema_seeds_last_cwd_without_collapsing_workspaces() {
+        let data = r#"{
+            "schema_version": 2,
+            "sidebar_visible": true,
+            "sidebar_width": 480,
+            "workspaces": [
+                {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "name": "project",
+                    "root": "/Users/example/project",
+                    "mux_workspace": "project",
+                    "order": 0
+                },
+                {
+                    "id": "00000000-0000-0000-0000-000000000002",
+                    "name": "default",
+                    "root": null,
+                    "mux_workspace": "default",
+                    "order": 1
+                }
+            ]
+        }"#;
+        let mut state: PersistedWorkspaceState = serde_json::from_str(data).unwrap();
+
+        migrate_workspace_state(&mut state);
+
+        assert_eq!(state.schema_version, SCHEMA_VERSION);
+        assert_eq!(state.workspaces.len(), 2);
+        assert_eq!(
+            state.workspaces[0].last_cwd,
+            Some(PathBuf::from("/Users/example/project"))
+        );
+        assert_eq!(state.workspaces[1].last_cwd, None);
+    }
+
+    #[test]
+    fn last_cwd_updates_only_when_the_value_changes() {
+        let mut registry = WorkspaceRegistry {
+            state: PersistedWorkspaceState {
+                workspaces: vec![HarborWorkspace {
+                    id: Uuid::new_v4(),
+                    name: "project".to_string(),
+                    root: Some(PathBuf::from("/project")),
+                    last_cwd: Some(PathBuf::from("/project")),
+                    mux_workspace: "project".to_string(),
+                    order: 0,
+                }],
+                ..PersistedWorkspaceState::default()
+            },
+            loaded: true,
+        };
+
+        assert!(!set_last_cwd(
+            &mut registry,
+            "project",
+            PathBuf::from("/project")
+        ));
+        assert!(set_last_cwd(
+            &mut registry,
+            "project",
+            PathBuf::from("/project/subdir")
+        ));
+        assert_eq!(
+            registry.state.workspaces[0].last_cwd,
+            Some(PathBuf::from("/project/subdir"))
+        );
+        assert!(!set_last_cwd(
+            &mut registry,
+            "unknown",
+            PathBuf::from("/elsewhere")
+        ));
+    }
+
+    #[test]
+    fn resume_cwd_prefers_saved_directory_then_root() {
+        let saved = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut workspace = HarborWorkspace {
+            id: Uuid::new_v4(),
+            name: "project".to_string(),
+            root: Some(root.path().to_path_buf()),
+            last_cwd: Some(saved.path().to_path_buf()),
+            mux_workspace: "project".to_string(),
+            order: 0,
+        };
+
+        assert_eq!(resume_cwd(&workspace).as_deref(), Some(saved.path()));
+        workspace.last_cwd = Some(saved.path().join("missing"));
+        assert_eq!(resume_cwd(&workspace).as_deref(), Some(root.path()));
     }
 
     #[test]

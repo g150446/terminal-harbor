@@ -82,6 +82,10 @@ impl GuiFrontEnd {
                         let mux = Mux::get();
                         if let Err(err) = mux.focus_pane_and_containing_tab(pane_id) {
                             log::error!("Error reconciling PaneFocused notification: {err:#}");
+                        } else if let Err(err) =
+                            crate::harbor_workspace::record_active_pane_cwd(pane_id)
+                        {
+                            log::error!("saving focused workspace directory: {err:#}");
                         }
                     })
                     .detach();
@@ -139,11 +143,18 @@ impl GuiFrontEnd {
                     // Handled via TermWindowNotif; NOP it here.
                 }
                 MuxNotification::Alert {
+                    pane_id,
+                    alert: Alert::CurrentWorkingDirectoryChanged,
+                } => {
+                    if let Err(err) = crate::harbor_workspace::record_active_pane_cwd(pane_id) {
+                        log::error!("saving changed workspace directory: {err:#}");
+                    }
+                }
+                MuxNotification::Alert {
                     pane_id: _,
                     alert:
                         Alert::OutputSinceFocusLost
                         | Alert::PaletteChanged
-                        | Alert::CurrentWorkingDirectoryChanged
                         | Alert::WindowTitleChanged(_)
                         | Alert::TabTitleChanged(_)
                         | Alert::IconTitleChanged(_)

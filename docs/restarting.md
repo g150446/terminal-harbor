@@ -30,6 +30,13 @@ The first build that introduces persistent sessions cannot migrate terminals
 that were already owned by an older GUI process. Perform one complete restart;
 sessions opened by subsequent builds can then survive GUI restarts.
 
+A complete restart and a normal application quit still end the processes,
+tabs, split panes, scrollback, and other terminal state. Before stopping the
+session host, Terminal Harbor records the active pane's working directory for
+each workspace. Opening those workspaces after relaunch creates one terminal in
+the recorded directory. If that directory is no longer available, Terminal
+Harbor falls back to the workspace root and then the home directory.
+
 ## Releases that require a full restart
 
 Sidebar agent activity relies on the session host publishing `TH_PANE_PROCESS`

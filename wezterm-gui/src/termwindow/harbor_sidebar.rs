@@ -509,10 +509,11 @@ impl crate::TermWindow {
         let pane = self
             .get_active_pane_or_overlay()
             .ok_or_else(|| anyhow::anyhow!("no active pane"))?;
+        let cwd = harbor_workspace::resume_cwd(&workspace);
         let action = config::keyassignment::KeyAssignment::SwitchToWorkspace {
             name: Some(workspace.mux_workspace),
             spawn: Some(config::keyassignment::SpawnCommand {
-                cwd: workspace.root,
+                cwd,
                 ..Default::default()
             }),
         };
