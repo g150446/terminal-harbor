@@ -402,6 +402,10 @@ pub struct TermWindow {
     tab_bar: TabBarState,
     fancy_tab_bar: Option<box_model::ComputedElement>,
     harbor_sidebar: Option<box_model::ComputedElement>,
+    /// Last sidebar-relevant pane title, keyed by pane. Agents animate a
+    /// spinner in their title, so the cached sidebar is only dropped when the
+    /// summary text itself changes.
+    harbor_pane_titles: HashMap<PaneId, String>,
     pub right_status: String,
     pub left_status: String,
     last_ui_item: Option<UIItem>,
@@ -729,6 +733,7 @@ impl TermWindow {
             tab_bar: TabBarState::default(),
             fancy_tab_bar: None,
             harbor_sidebar: None,
+            harbor_pane_titles: HashMap::new(),
             right_status: String::new(),
             left_status: String::new(),
             last_mouse_coords: (0, -1),
@@ -1243,17 +1248,34 @@ impl TermWindow {
                     alert: Alert::SetUserVar { name, value },
                     pane_id,
                 } => {
-                    if name.starts_with("TH_AGENT_") {
+                    if name.starts_with("TH_AGENT_")
+                        || name == crate::harbor_workspace::PANE_PROCESS_USER_VAR
+                    {
                         self.invalidate_harbor_sidebar();
                         window.invalidate();
                     }
                     self.emit_user_var_event(pane_id, name, value);
                 }
+                MuxNotification::Alert {
+                    alert: Alert::WindowTitleChanged(ref title),
+                    pane_id,
+                } => {
+                    // Agents publish their current task as the pane title, so
+                    // the sidebar has to follow it. Claude Code rewrites the
+                    // title every frame to advance a spinner; comparing the
+                    // stripped text keeps that from relaying the sidebar.
+                    let summary = crate::harbor_workspace::strip_status_glyphs(title);
+                    if self.harbor_pane_titles.get(&pane_id) != Some(&summary) {
+                        self.harbor_pane_titles.insert(pane_id, summary);
+                        self.invalidate_harbor_sidebar();
+                        window.invalidate();
+                    }
+                    self.update_title();
+                }
                 MuxNotification::WindowTitleChanged { .. }
                 | MuxNotification::Alert {
                     alert:
                         Alert::OutputSinceFocusLost
-                        | Alert::WindowTitleChanged(_)
                         | Alert::TabTitleChanged(_)
                         | Alert::IconTitleChanged(_)
                         | Alert::Progress(_),
@@ -1366,9 +1388,11 @@ impl TermWindow {
                 MuxNotification::TabTitleChanged { .. } => {
                     self.update_title_post_status();
                 }
+                MuxNotification::PaneRemoved(pane_id) => {
+                    self.harbor_pane_titles.remove(&pane_id);
+                }
                 MuxNotification::PaneAdded(_)
                 | MuxNotification::WorkspaceRenamed { .. }
-                | MuxNotification::PaneRemoved(_)
                 | MuxNotification::WindowWorkspaceChanged(_)
                 | MuxNotification::ActiveWorkspaceChanged(_)
                 | MuxNotification::Empty

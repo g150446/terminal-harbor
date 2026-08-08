@@ -6,6 +6,7 @@ use config::{Dimension, DimensionContext};
 use mux::pane::CachePolicy;
 use mux::Mux;
 use std::path::PathBuf;
+use termwiz::cell::unicode_column_width;
 use window::color::LinearRgba;
 
 /// Soft-wrap `text` so each visual line fits roughly `max_cols` cells.
@@ -61,17 +62,41 @@ fn wrap_sidebar_lines(text: &str, max_cols: usize) -> Vec<String> {
     lines
 }
 
-fn workspace_detail(directory: &str, process: Option<&str>, message: Option<&str>) -> String {
-    let mut detail = format!("  {directory}");
-    if let Some(process) = process.filter(|value| !value.is_empty()) {
-        detail.push_str(" · ");
-        detail.push_str(process);
+/// Keep a sidebar line to exactly one visual row; overflow becomes an ellipsis.
+/// Width is measured in cells so CJK text, which is double-width, is not
+/// allowed to overflow the panel.
+fn truncate_line(text: &str, max_cols: usize) -> String {
+    let max_cols = max_cols.max(2);
+    let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if unicode_column_width(&flattened, None) <= max_cols {
+        return flattened;
     }
-    if let Some(message) = message.filter(|value| !value.is_empty()) {
+    let budget = max_cols - 1; // room for the ellipsis
+    let mut out = String::new();
+    let mut width = 0;
+    for ch in flattened.chars() {
+        let ch_width = unicode_column_width(ch.encode_utf8(&mut [0u8; 4]), None);
+        if width + ch_width > budget {
+            break;
+        }
+        width += ch_width;
+        out.push(ch);
+    }
+    out.push('…');
+    out
+}
+
+/// Detail lines for a row: the agent name, then its one-line task summary.
+/// Returns `None` when no AI agent is running, which keeps the row down to its
+/// directory line.
+fn workspace_detail(agent: Option<&str>, summary: Option<&str>, max_cols: usize) -> Option<String> {
+    let agent = agent.map(str::trim).filter(|value| !value.is_empty())?;
+    let mut detail = format!("  {}", truncate_line(agent, max_cols));
+    if let Some(summary) = summary.map(str::trim).filter(|value| !value.is_empty()) {
         detail.push_str("\n  ");
-        detail.push_str(message);
+        detail.push_str(&truncate_line(summary, max_cols));
     }
-    detail
+    Some(detail)
 }
 
 /// box_model Text is single-line; multi-line content must be Children of Text rows.
@@ -338,30 +363,42 @@ impl crate::TermWindow {
         }
 
         for row in harbor_workspace::rows() {
-            let detail = workspace_detail(
-                &row.directory,
-                row.process.as_deref(),
-                row.message.as_deref(),
-            );
             let (colors, hover) = Self::sidebar_colors(row.selected);
+            // Line 1 is the live directory; the creation-time workspace name is
+            // deliberately not shown, since it never follows `cd` or tab
+            // switches.
             let title = wrapped_text_element(
                 &font,
-                &format!("{}  {}", row.activity.glyph(), row.workspace.name),
+                &format!(
+                    "{}  {}",
+                    row.activity.glyph(),
+                    truncate_line(&row.directory, max_cols.saturating_sub(3))
+                ),
                 max_cols,
                 colors.clone(),
             );
-            let detail = wrapped_text_element(
-                &font,
-                &detail,
+            let mut kids = vec![title];
+            if let Some(detail) = workspace_detail(
+                row.agent.as_deref(),
+                row.summary.as_deref(),
                 max_cols.saturating_sub(2),
-                ElementColors {
-                    border: BorderColor::default(),
-                    bg: InheritableColor::Inherited,
-                    text: muted.into(),
-                },
-            );
+            ) {
+                // `workspace_detail` already truncated each line to
+                // `max_cols - 2` and added the 2-space indent, so wrapping at
+                // `max_cols` here only splits on the newline between them.
+                kids.push(wrapped_text_element(
+                    &font,
+                    &detail,
+                    max_cols,
+                    ElementColors {
+                        border: BorderColor::default(),
+                        bg: InheritableColor::Inherited,
+                        text: muted.into(),
+                    },
+                ));
+            }
             children.push(
-                Element::new(&font, ElementContent::Children(vec![title, detail]))
+                Element::new(&font, ElementContent::Children(kids))
                     .display(DisplayType::Block)
                     .item_type(UIItemType::HarborWorkspace(row.workspace.mux_workspace))
                     .line_height(Some(1.25))
@@ -487,7 +524,7 @@ impl crate::TermWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{workspace_detail, wrap_sidebar_lines};
+    use super::{truncate_line, unicode_column_width, workspace_detail, wrap_sidebar_lines};
 
     #[test]
     fn wraps_long_uri_without_spaces() {
@@ -506,19 +543,74 @@ mod tests {
     }
 
     #[test]
-    fn detail_always_includes_directory() {
-        assert_eq!(workspace_detail("project", None, None), "  project");
+    fn detail_is_absent_without_an_agent() {
+        assert_eq!(workspace_detail(None, None, 40), None);
+        // A summary without an agent must not produce an orphan line.
+        assert_eq!(workspace_detail(None, Some("Running tests"), 40), None);
+        assert_eq!(workspace_detail(Some("   "), Some("Running tests"), 40), None);
+    }
+
+    #[test]
+    fn detail_lists_agent_then_summary() {
         assert_eq!(
-            workspace_detail("project", Some("codex"), None),
-            "  project · codex"
+            workspace_detail(Some("Codex"), None, 40),
+            Some("  Codex".to_string())
         );
         assert_eq!(
-            workspace_detail("project", Some("codex"), Some("Running tests")),
-            "  project · codex\n  Running tests"
+            workspace_detail(Some("Codex"), Some("Running tests"), 40),
+            Some("  Codex\n  Running tests".to_string())
         );
         assert_eq!(
-            workspace_detail("project", None, Some("Waiting")),
-            "  project\n  Waiting"
+            workspace_detail(Some("Codex"), Some("  "), 40),
+            Some("  Codex".to_string())
         );
+    }
+
+    #[test]
+    fn detail_lines_fit_the_row_width_including_the_indent() {
+        // Rows must stay one visual line: each detail line is truncated to
+        // `max_cols - 2` and then indented by two spaces, so the rendered line
+        // has to come out at or under `max_cols`.
+        let max_cols = 40;
+        let long_ascii = "a".repeat(200);
+        let long_cjk = "作業内容の要約がとても長い場合のテキスト".repeat(4);
+        for summary in [long_ascii.as_str(), long_cjk.as_str()] {
+            let detail = workspace_detail(Some("Claude"), Some(summary), max_cols - 2).unwrap();
+            let lines: Vec<_> = detail.split('\n').collect();
+            assert_eq!(lines.len(), 2);
+            for line in lines {
+                assert!(
+                    unicode_column_width(line, None) <= max_cols,
+                    "line {line:?} exceeds {max_cols} cells"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn truncate_line_keeps_short_text_intact() {
+        assert_eq!(truncate_line("harbor", 40), "harbor");
+        assert_eq!(truncate_line("  harbor  ", 40), "harbor");
+    }
+
+    #[test]
+    fn truncate_line_collapses_newlines_into_one_row() {
+        assert_eq!(truncate_line("line one\nline two", 40), "line one line two");
+    }
+
+    #[test]
+    fn truncate_line_marks_ascii_overflow() {
+        let out = truncate_line("abcdefghij", 5);
+        assert_eq!(out, "abcd…");
+        assert!(unicode_column_width(&out, None) <= 5);
+    }
+
+    #[test]
+    fn truncate_line_respects_double_width_cells() {
+        // Each CJK character occupies two cells, so 10 cells fit 4 of them
+        // plus the ellipsis.
+        let out = truncate_line("作業内容の要約が長い", 10);
+        assert_eq!(out, "作業内容…");
+        assert!(unicode_column_width(&out, None) <= 10);
     }
 }

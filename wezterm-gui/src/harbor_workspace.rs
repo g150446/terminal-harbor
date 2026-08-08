@@ -81,9 +81,114 @@ pub struct HarborWorkspaceRow {
     pub workspace: HarborWorkspace,
     pub activity: WorkspaceActivity,
     pub directory: String,
+    /// Display name of the AI agent running in this workspace, if any.
+    /// Sidebar-only, like `directory`: not persisted and not in the mobile API.
+    pub agent: Option<String>,
+    /// One-line summary of what that agent is working on. Sidebar-only.
+    pub summary: Option<String>,
     pub process: Option<String>,
     pub message: Option<String>,
     pub selected: bool,
+}
+
+/// AI coding agents the sidebar recognizes, matched against the foreground
+/// process basename. Anything else counts as "no agent running" and keeps the
+/// row down to its directory line.
+const KNOWN_AGENTS: &[(&str, &str)] = &[
+    ("claude", "Claude"),
+    ("codex", "Codex"),
+    ("opencode", "OpenCode"),
+];
+
+/// Pane titles that carry no task information; agents and shells both fall
+/// back to these, and `LocalPane::get_title` substitutes the process name for
+/// the default title.
+const UNINFORMATIVE_TITLES: &[&str] = &["wezterm", "zsh", "bash", "fish", "sh", "nu", "pwsh"];
+
+/// Leading decoration that agents put in front of the actual summary. Claude
+/// Code animates a braille spinner here, so it has to come off before the
+/// title can be compared for changes.
+fn is_status_glyph(ch: char) -> bool {
+    ch.is_whitespace()
+        || matches!(ch, '\u{2800}'..='\u{28FF}')
+        || matches!(
+            ch,
+            '✳' | '✻' | '✽' | '✶' | '✢' | '·' | '●' | '○' | '◐' | '◓' | '▪' | '⏵' | '*' | '⠿'
+        )
+}
+
+/// User var the mux server uses to relay the foreground process basename.
+/// Must match `wezterm_mux_server_impl::sessionhandler::PANE_PROCESS_USER_VAR`.
+pub const PANE_PROCESS_USER_VAR: &str = "TH_PANE_PROCESS";
+
+/// Foreground process basename for a pane.
+///
+/// `Pane::get_foreground_process_name` is only implemented for local panes. A
+/// GUI attached to the persistent mux server sees `ClientPane`s, which return
+/// `None`, so fall back to the user var the server relays for us.
+pub fn pane_process_name(
+    pane: &std::sync::Arc<dyn mux::pane::Pane>,
+    vars: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    pane.get_foreground_process_name(CachePolicy::AllowStale)
+        .and_then(|name| {
+            Path::new(&name)
+                .file_name()
+                .map(|part| part.to_string_lossy().into_owned())
+        })
+        .or_else(|| {
+            vars.get(PANE_PROCESS_USER_VAR)
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
+pub fn agent_label(raw: &str) -> Option<&'static str> {
+    let name = raw.trim().to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    KNOWN_AGENTS
+        .iter()
+        .find(|(exe, _)| *exe == name)
+        .map(|(_, label)| *label)
+}
+
+/// Strip the animated spinner and collapse whitespace so repeated title
+/// updates that only advance the spinner compare equal.
+pub fn strip_status_glyphs(title: &str) -> String {
+    let stripped = title.trim_start_matches(is_status_glyph);
+    let mut out = String::with_capacity(stripped.len());
+    let mut pending_space = false;
+    for ch in stripped.chars() {
+        if ch.is_whitespace() {
+            pending_space = !out.is_empty();
+            continue;
+        }
+        if pending_space {
+            out.push(' ');
+            pending_space = false;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Return the pane title only when it actually describes the agent's work.
+fn summary_from_title(title: &str, agent: &str, process: Option<&str>) -> Option<String> {
+    let summary = strip_status_glyphs(title);
+    if summary.is_empty() || summary.eq_ignore_ascii_case(agent) {
+        return None;
+    }
+    if process.is_some_and(|process| summary.eq_ignore_ascii_case(process)) {
+        return None;
+    }
+    if UNINFORMATIVE_TITLES
+        .iter()
+        .any(|known| summary.eq_ignore_ascii_case(known))
+    {
+        return None;
+    }
+    Some(summary)
 }
 
 #[derive(Default)]
@@ -433,6 +538,9 @@ pub fn rows() -> Vec<HarborWorkspaceRow> {
             let directory = active_directory_for_workspace(&mux, &workspace);
             let mut process = None;
             let mut message = None;
+            // Agent name and summary must describe the same pane, so they are
+            // resolved together rather than as independent first-hit scans.
+            let mut agent_info: Option<(String, Option<String>)> = None;
             for window_id in mux.iter_windows_in_workspace(&workspace.mux_workspace) {
                 let Some(window) = mux.get_window(window_id) else {
                     continue;
@@ -452,27 +560,61 @@ pub fn rows() -> Vec<HarborWorkspaceRow> {
                         if candidate.priority() > activity.priority() {
                             activity = candidate;
                         }
+                        let pane_process = pane_process_name(&pane, &vars);
                         if process.is_none() {
-                            process = vars.get("TH_AGENT_NAME").cloned().or_else(|| {
-                                pane.get_foreground_process_name(CachePolicy::AllowStale)
-                                    .and_then(|name| {
-                                        Path::new(&name)
-                                            .file_name()
-                                            .map(|part| part.to_string_lossy().into_owned())
-                                    })
-                            });
+                            process = vars
+                                .get("TH_AGENT_NAME")
+                                .cloned()
+                                .or_else(|| pane_process.clone());
                         }
                         if message.is_none() {
                             message = vars.get("TH_AGENT_MESSAGE").cloned();
                         }
+                        if agent_info.is_none() {
+                            // An explicit TH_AGENT_NAME wins and may be any
+                            // agent; otherwise only a recognized AI agent
+                            // counts as running.
+                            let label = vars
+                                .get("TH_AGENT_NAME")
+                                .map(|name| name.trim())
+                                .filter(|name| !name.is_empty())
+                                .map(str::to_string)
+                                .or_else(|| {
+                                    pane_process
+                                        .as_deref()
+                                        .and_then(agent_label)
+                                        .map(str::to_string)
+                                });
+                            if let Some(label) = label {
+                                let summary = vars
+                                    .get("TH_AGENT_MESSAGE")
+                                    .map(|value| value.trim())
+                                    .filter(|value| !value.is_empty())
+                                    .map(str::to_string)
+                                    .or_else(|| {
+                                        summary_from_title(
+                                            &pane.get_title(),
+                                            &label,
+                                            pane_process.as_deref(),
+                                        )
+                                    });
+                                agent_info = Some((label, summary));
+                            }
+                        }
                     }
                 }
             }
+            let (agent, summary) = match agent_info {
+                Some((agent, summary)) => (Some(agent), summary),
+                None => (None, None),
+            };
             HarborWorkspaceRow {
                 selected: workspace.mux_workspace == active,
                 workspace,
                 activity,
                 directory,
+                agent,
+                summary,
                 process,
                 message,
             }
@@ -483,6 +625,59 @@ pub fn rows() -> Vec<HarborWorkspaceRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pane_process_user_var_matches_the_mux_server() {
+        // The GUI only learns the foreground process of a client pane through
+        // this user var, so the two constants must not drift apart.
+        assert_eq!(
+            PANE_PROCESS_USER_VAR,
+            wezterm_mux_server_impl::sessionhandler::PANE_PROCESS_USER_VAR
+        );
+    }
+
+    #[test]
+    fn agent_label_matches_known_agents_only() {
+        assert_eq!(agent_label("claude"), Some("Claude"));
+        assert_eq!(agent_label("codex"), Some("Codex"));
+        assert_eq!(agent_label("opencode"), Some("OpenCode"));
+        assert_eq!(agent_label("Codex.exe"), Some("Codex"));
+        // Shells and generic runtimes must not count as a running agent.
+        assert_eq!(agent_label("zsh"), None);
+        assert_eq!(agent_label("node"), None);
+        assert_eq!(agent_label("cargo"), None);
+        assert_eq!(agent_label(""), None);
+    }
+
+    #[test]
+    fn strip_status_glyphs_ignores_spinner_frames() {
+        // Claude Code advances a braille spinner in place; both frames must
+        // normalize to the same text so the sidebar is not rebuilt each frame.
+        assert_eq!(
+            strip_status_glyphs("⠂ サイドバーの表示を修正"),
+            "サイドバーの表示を修正"
+        );
+        assert_eq!(
+            strip_status_glyphs("⠐ サイドバーの表示を修正"),
+            "サイドバーの表示を修正"
+        );
+        assert_eq!(strip_status_glyphs("✳ Running  tests"), "Running tests");
+        assert_eq!(strip_status_glyphs("  ⠿  "), "");
+    }
+
+    #[test]
+    fn summary_rejects_uninformative_titles() {
+        // opencode reports only its own name as the title.
+        assert_eq!(summary_from_title("OpenCode", "OpenCode", None), None);
+        assert_eq!(summary_from_title("zsh", "Claude", None), None);
+        assert_eq!(summary_from_title("wezterm", "Claude", None), None);
+        assert_eq!(summary_from_title("", "Claude", None), None);
+        assert_eq!(summary_from_title("claude", "Claude", Some("claude")), None);
+        assert_eq!(
+            summary_from_title("⠂ Fixing the sidebar", "Claude", Some("claude")),
+            Some("Fixing the sidebar".to_string())
+        );
+    }
 
     #[test]
     fn activity_priority_keeps_attention_states_visible() {

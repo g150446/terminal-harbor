@@ -5,24 +5,108 @@ rows in the macOS Terminal Harbor sidebar.
 
 ## Row contract
 
-Each workspace row has a title and one or more detail lines:
+Each workspace row is one line of live directory, followed by two agent lines
+that appear only while an AI agent is running:
 
 ```text
-●  Workspace name
-  directory · agent
-  optional status message
+●  directory
+  agent
+  one-line task summary
+```
+
+```text
+●  harbor
+  Claude
+  Removing the workspace folder name from the sidebar
 ```
 
 - `directory` is always present. It is a basename such as `terminal-harbor`,
   never a full path.
-- `agent` is the existing agent or foreground-process label and is omitted
-  when unavailable.
-- A non-empty `TH_AGENT_MESSAGE` is rendered on the following line. It must
-  not replace or hide the directory and agent line.
-- The directory remains visible when no AI agent is running.
+- `agent` and the task summary are omitted entirely when no AI agent is
+  running. A row for a plain shell is a single directory line; foreground
+  process names such as `zsh` are never shown.
+- The summary is omitted when the agent is running but publishes nothing
+  usable, leaving a two-line row.
+- Every line is truncated to one visual row with `…`. Width is measured in
+  cells, so double-width CJK text cannot overflow the panel.
+
+The creation-time workspace name (`HarborWorkspace.name`) is deliberately **not
+shown**. It is captured once by `create_from_path()` and never follows `cd` or
+tab switches, so displaying it alongside the live directory showed the same
+folder twice with one copy permanently stale. The field is still persisted and
+still used by `unique_name()`, the launcher palette
+(`overlay/launcher.rs`), and the mobile JSON API.
 
 These rules avoid leaking long local paths into the sidebar and keep the
 workspace location visible independently of agent status.
+
+## Agent detection and task summary
+
+`harbor_workspace::rows()` resolves both values from the *same* pane, so the
+summary always belongs to the agent named above it.
+
+Agent name, in order:
+
+1. A non-empty `TH_AGENT_NAME` user var, used verbatim. The
+   `wezterm workspace status --agent <name>` protocol accepts any agent name,
+   so this path is not restricted to the known list.
+2. The foreground process basename via `pane_process_name()`, but only when
+   `agent_label()` matches `KNOWN_AGENTS` (`claude`, `codex`, `opencode`).
+   Add new agents there.
+3. Otherwise no agent is running and the row stays at one line.
+
+### Why the foreground process needs the mux server
+
+`Pane::get_foreground_process_name` is implemented only on `LocalPane`
+(`mux/src/localpane.rs`). The GUI attaches to the persistent mux server as a
+client, so every pane it sees is a `ClientPane`, which inherits the default
+trait impl returning `None` (`mux/src/pane.rs`). Confirm the topology with
+`wezterm cli list-clients`: the GUI's own pid appears as a connected client.
+
+The server therefore relays the basename as the `TH_PANE_PROCESS` user var from
+`maybe_push_pane_changes()` in
+`wezterm-mux-server-impl/src/sessionhandler.rs`, which already runs per pane on
+activity. `PerPane::foreground_process` holds the last value so the alert is
+only synthesized on change; the underlying proc inspection is separately rate
+limited by `PROC_INFO_CACHE_TTL`. `ClientPane` stores incoming
+`Alert::SetUserVar` into its user vars, so `pane_process_name()` in
+`harbor_workspace.rs` reads it back as a fallback.
+
+The constant is duplicated in both crates and pinned by the
+`pane_process_user_var_matches_the_mux_server` test — keep them equal.
+
+Note the asymmetry when shipping changes: GUI-only work reaches users through a
+session-preserving `wezterm restart`, but anything in this path changes the mux
+server and needs `wezterm restart --full`, which terminates every terminal
+session.
+
+The pane title cannot substitute for this. `LocalPane::get_title` falls back to
+the process basename only when the program sets no title of its own, so a pane
+either reports its process (shells) or its task (agents), never both.
+
+Task summary, in order:
+
+1. A non-empty `TH_AGENT_MESSAGE` user var.
+2. The pane title, via `summary_from_title()`.
+
+Agents publish their current task as the pane title (OSC 0/2), which is why no
+transcript parsing or screen scraping is involved. `summary_from_title()`
+rejects titles that carry no task information: empty strings, the agent's own
+name (opencode titles itself `OpenCode`), the foreground process name, and
+shell names. `LocalPane::get_title` substitutes the process name for the
+default title, so those must be filtered here.
+
+`strip_status_glyphs()` removes leading decoration before the title is used or
+compared. Claude Code prefixes an animated braille spinner and rewrites the
+title continuously; without stripping, the sidebar would relayout on every
+spinner frame. `termwindow/mod.rs` therefore caches the stripped title per pane
+in `harbor_pane_titles` and only calls `invalidate_harbor_sidebar()` when that
+text actually changes. Keep the stripping and the comparison in agreement —
+comparing raw titles reintroduces the relayout storm.
+
+`agent` and `summary` are sidebar-only derived fields on `HarborWorkspaceRow`,
+like `directory`. `process` and `message` are unchanged and remain the source
+for the mobile JSON API.
 
 ## Directory selection
 
@@ -59,7 +143,10 @@ invalidate the window:
   detection;
 - `MuxNotification::PaneFocused` after selecting another split pane;
 - `MuxNotification::WindowInvalidated`, which covers active-tab and structural
-  window changes.
+  window changes;
+- `Alert::WindowTitleChanged`, but only when the stripped title differs from
+  the cached one for that pane. `MuxNotification::PaneRemoved` drops the pane's
+  cache entry.
 
 If a new tab-activation path is introduced without one of these notifications,
 explicitly invalidate the Harbor sidebar there. Do not rebuild the sidebar on
@@ -86,9 +173,9 @@ When troubleshooting a stale label:
 
 | File | Responsibility |
 |---|---|
-| `wezterm-gui/src/harbor_workspace.rs` | Directory resolution, fallback order, agent/activity aggregation, and `HarborWorkspaceRow` |
-| `wezterm-gui/src/termwindow/harbor_sidebar.rs` | Detail-line formatting, wrapping, colors, and row rendering |
-| `wezterm-gui/src/termwindow/mod.rs` | Mux notification handling and sidebar cache invalidation |
+| `wezterm-gui/src/harbor_workspace.rs` | Directory resolution, fallback order, agent/activity aggregation, `KNOWN_AGENTS`, title normalization, and `HarborWorkspaceRow` |
+| `wezterm-gui/src/termwindow/harbor_sidebar.rs` | Detail-line formatting, truncation, wrapping, colors, and row rendering |
+| `wezterm-gui/src/termwindow/mod.rs` | Mux notification handling, `harbor_pane_titles`, and sidebar cache invalidation |
 | `README.md` | User-facing display behavior |
 
 The mobile workspace API continues to expose the persisted `root`; the
@@ -105,15 +192,25 @@ cargo check -p wezterm-gui
 cargo build -p wezterm-gui
 ```
 
-Manual acceptance checks on macOS:
+Manual acceptance checks on macOS. `wezterm cli list --format json` reports the
+pane titles and CWDs the sidebar derives from, so expected values can be
+checked against it:
 
-- no agent: the active directory basename is visible;
-- active agent: `directory · agent` is visible;
-- agent message: the first detail line remains and the message appears below;
-- `cd` updates the label after the next prompt;
+- no agent: a single row line with the active directory basename, and no
+  `zsh`-style process name;
+- Claude: `Claude` on line 2 and its current task on line 3, with no visible
+  relayout while only the spinner advances;
+- opencode: `OpenCode` on line 2 and no line 3, since it titles itself;
+- `wezterm workspace status --agent codex --message "Running tests"` still wins
+  over the pane title;
+- the creation-time folder name appears nowhere, including after `cd` into an
+  unrelated directory;
+- `cd` updates line 1 after the next prompt;
 - tabs with different CWDs show the selected tab's directory;
 - split panes with different CWDs show the selected pane's directory;
-- long and non-ASCII directory names wrap without exposing their full path.
+- long and non-ASCII summaries truncate to one row so row heights stay even,
+  and no full path is exposed.
 
 Unit tests should continue covering basename extraction (including `/` and
-non-ASCII paths) and all directory/agent/message formatting combinations.
+non-ASCII paths), `KNOWN_AGENTS` matching, spinner stripping, uninformative
+title rejection, and cell-width truncation.

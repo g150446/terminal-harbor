@@ -1481,14 +1481,10 @@ fn speech_hint_context(id: &str) -> anyhow::Result<SpeechHintContext> {
     let cwd = pane
         .get_current_working_dir(CachePolicy::AllowStale)
         .and_then(|url| url.to_file_path().ok());
-    let agent_name = vars.get("TH_AGENT_NAME").cloned().or_else(|| {
-        pane.get_foreground_process_name(CachePolicy::AllowStale)
-            .and_then(|name| {
-                Path::new(&name)
-                    .file_name()
-                    .map(|part| part.to_string_lossy().into_owned())
-            })
-    });
+    let agent_name = vars
+        .get("TH_AGENT_NAME")
+        .cloned()
+        .or_else(|| crate::harbor_workspace::pane_process_name(&pane, &vars));
     Ok(SpeechHintContext {
         workspace_name: workspace.name,
         root: workspace.root,
