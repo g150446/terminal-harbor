@@ -45,8 +45,15 @@ pub(crate) struct PerPane {
     sent_initial_palette: bool,
     seqno: SequenceNo,
     config_generation: usize,
+    foreground_process: Option<String>,
     pub(crate) notifications: Vec<Alert>,
 }
+
+/// User var used to relay the foreground process basename to clients.
+/// `Pane::get_foreground_process_name` only works for local panes, so a GUI
+/// attached to this server would otherwise never learn which program, such as
+/// an AI agent, is running in a pane.
+pub const PANE_PROCESS_USER_VAR: &str = "TH_PANE_PROCESS";
 
 impl PerPane {
     fn compute_changes(
@@ -154,6 +161,25 @@ fn maybe_push_pane_changes(
             pdu: Pdu::GetPaneRenderChangesResponse(resp),
             serial: 0,
         })?;
+    }
+
+    // Relay the foreground process to the client as a user var. The proc info
+    // behind this is already rate limited by its own cache TTL, and the alert
+    // is only synthesized when the value actually changes.
+    let foreground_process = pane.get_foreground_process_name(CachePolicy::AllowStale).map(
+        |name| {
+            std::path::Path::new(&name)
+                .file_name()
+                .map(|part| part.to_string_lossy().into_owned())
+                .unwrap_or(name)
+        },
+    );
+    if foreground_process != per_pane.foreground_process {
+        per_pane.foreground_process = foreground_process.clone();
+        per_pane.notifications.push(Alert::SetUserVar {
+            name: PANE_PROCESS_USER_VAR.to_string(),
+            value: foreground_process.unwrap_or_default(),
+        });
     }
 
     let config = config::configuration();
