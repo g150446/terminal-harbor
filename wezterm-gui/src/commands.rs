@@ -1269,7 +1269,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             icon: Some("md_reload"),
         },
         RestartApplication => CommandDef {
-            brief: "Restart Terminal Harbor (Keep Sessions)".into(),
+            brief: "Restart GUI (Keep Sessions)".into(),
             doc: "Restarts the Terminal Harbor GUI while keeping terminal sessions running".into(),
             keys: vec![],
             args: &[],
@@ -1277,12 +1277,20 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             icon: Some("md_restart"),
         },
         RestartApplicationFull => CommandDef {
-            brief: "Restart Terminal Harbor Completely".into(),
-            doc: "Restarts Terminal Harbor and terminates all terminal sessions".into(),
+            brief: "Restart Sessions (Restore Workspaces)".into(),
+            doc: "Restarts all terminal sessions and restores the workspace list".into(),
             keys: vec![],
             args: &[],
             menubar: &["Terminal Harbor"],
             icon: Some("md_restart_alert"),
+        },
+        RestartApplicationResetWorkspaces => CommandDef {
+            brief: "Reset All Workspaces".into(),
+            doc: "Terminates all terminal sessions and restarts with one home workspace".into(),
+            keys: vec![],
+            args: &[],
+            menubar: &["Terminal Harbor"],
+            icon: Some("md_restart_off"),
         },
         QuitApplication => CommandDef {
             brief: "Quit Terminal Harbor".into(),
@@ -2087,6 +2095,7 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         ReloadConfiguration,
         RestartApplication,
         RestartApplicationFull,
+        RestartApplicationResetWorkspaces,
         #[cfg(target_os = "macos")]
         HideApplication,
         #[cfg(target_os = "macos")]

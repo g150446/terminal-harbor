@@ -15,7 +15,9 @@ pub mod prompt;
 pub mod quickselect;
 pub mod selector;
 
-pub use confirm_close_pane::{confirm_close_pane, confirm_close_window, confirm_quit_program};
+pub use confirm_close_pane::{
+    confirm_close_pane, confirm_close_window, confirm_quit_program, confirm_reset_workspaces,
+};
 pub use copy::{CopyModeParams, CopyOverlay};
 pub use debug::show_debug_overlay;
 pub use launcher::{launcher, LauncherArgs, LauncherFlags};

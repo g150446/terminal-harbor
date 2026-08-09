@@ -5,9 +5,9 @@ use crate::colorease::ColorEase;
 use crate::frontend::{front_end, try_front_end};
 use crate::inputmap::InputMap;
 use crate::overlay::{
-    confirm_close_pane, confirm_close_window, confirm_quit_program, launcher, start_overlay,
-    start_overlay_pane, CopyModeParams, CopyOverlay, LauncherArgs, LauncherFlags,
-    QuickSelectOverlay,
+    confirm_close_pane, confirm_close_window, confirm_quit_program, confirm_reset_workspaces,
+    launcher, start_overlay, start_overlay_pane, CopyModeParams, CopyOverlay, LauncherArgs,
+    LauncherFlags, QuickSelectOverlay,
 };
 use crate::resize_increment_calculator::ResizeIncrementCalculator;
 use crate::scripting::guiwin::GuiWin;
@@ -2876,8 +2876,24 @@ impl TermWindow {
             CloseCurrentPane { confirm } => self.close_current_pane(*confirm),
             Nop | DisableDefaultAssignment => {}
             ReloadConfiguration => config::reload(),
-            RestartApplication => crate::harbor_restart::restart_application(false)?,
-            RestartApplicationFull => crate::harbor_restart::restart_application(true)?,
+            RestartApplication => crate::harbor_restart::restart_application(
+                crate::harbor_restart::RestartMode::PreserveSessions,
+            )?,
+            RestartApplicationFull => crate::harbor_restart::restart_application(
+                crate::harbor_restart::RestartMode::RestoreWorkspaces,
+            )?,
+            RestartApplicationResetWorkspaces => {
+                let mux = Mux::get();
+                let Some(tab) = mux.get_active_tab_for_window(self.mux_window_id) else {
+                    return Ok(PerformAssignmentResult::Handled);
+                };
+                let window = self.window.clone().unwrap();
+                let (overlay, future) = start_overlay(self, &tab, move |tab_id, term| {
+                    confirm_reset_workspaces(term, window, tab_id)
+                });
+                self.assign_overlay(tab.tab_id(), overlay);
+                promise::spawn::spawn(future).detach();
+            }
             MoveTab(n) => self.move_tab(*n)?,
             MoveTabRelative(n) => self.move_tab_relative(*n)?,
             ScrollByPage(n) => self.scroll_by_page(**n, pane)?,

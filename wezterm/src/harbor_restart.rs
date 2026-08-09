@@ -9,9 +9,13 @@ use wezterm_gui_subcommands::{
 
 #[derive(Debug, Parser, Clone)]
 pub struct RestartCommand {
-    /// Terminate terminal sessions and restart the persistent session host too.
+    /// Terminate terminal sessions, restart the session host, and restore workspaces.
     #[arg(long)]
     full: bool,
+
+    /// Terminate all sessions, discard every workspace, and restart in the home directory.
+    #[arg(long, conflicts_with = "full")]
+    reset_workspaces: bool,
 
     /// Window class of the Terminal Harbor GUI to restart.
     #[arg(long, default_value = DEFAULT_WINDOW_CLASS)]
@@ -35,7 +39,7 @@ impl RestartCommand {
     pub fn run(&self) -> anyhow::Result<()> {
         use std::os::unix::net::UnixStream;
 
-        if !self.full {
+        if !self.full && !self.reset_workspaces {
             check_mux_compatibility()?;
         }
         let socket = harbor_control_socket_path(&self.class);
@@ -47,7 +51,12 @@ impl RestartCommand {
         })?;
         serde_json::to_writer(
             &mut stream,
-            &serde_json::json!({"version": 1, "command": "restart", "full": self.full}),
+            &serde_json::json!({
+                "version": if self.reset_workspaces { 2 } else { 1 },
+                "command": "restart",
+                "full": self.full || self.reset_workspaces,
+                "reset_workspaces": self.reset_workspaces,
+            }),
         )?;
         stream.write_all(b"\n")?;
         stream.flush()?;
@@ -69,8 +78,10 @@ impl RestartCommand {
         }
         println!(
             "Terminal Harbor {} restart accepted",
-            if self.full {
-                "complete"
+            if self.reset_workspaces {
+                "workspace-reset"
+            } else if self.full {
+                "session"
             } else {
                 "session-preserving"
             }
@@ -204,11 +215,27 @@ mod tests {
     fn preserving_restart_is_the_default() {
         let command = RestartCommand::try_parse_from(["restart"]).unwrap();
         assert!(!command.full);
+        assert!(!command.reset_workspaces);
     }
 
     #[test]
     fn full_restart_is_explicit() {
         let command = RestartCommand::try_parse_from(["restart", "--full"]).unwrap();
         assert!(command.full);
+        assert!(!command.reset_workspaces);
+    }
+
+    #[test]
+    fn workspace_reset_restart_is_explicit() {
+        let command = RestartCommand::try_parse_from(["restart", "--reset-workspaces"]).unwrap();
+        assert!(!command.full);
+        assert!(command.reset_workspaces);
+    }
+
+    #[test]
+    fn full_and_workspace_reset_are_mutually_exclusive() {
+        assert!(
+            RestartCommand::try_parse_from(["restart", "--full", "--reset-workspaces"]).is_err()
+        );
     }
 }

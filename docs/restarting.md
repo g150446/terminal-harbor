@@ -1,14 +1,17 @@
 # Restarting Terminal Harbor
 
-Terminal Harbor provides two restart modes from the **Terminal Harbor** app
+Terminal Harbor provides three restart modes from the **Terminal Harbor** app
 menu and from the command line.
 
 ```console
 # Restart the GUI and keep shells, Codex agents, and scrollback alive.
 wezterm restart
 
-# Restart both the GUI and session host. This ends all terminal sessions.
+# Restart the GUI and session host, then restore the workspace list and CWDs.
 wezterm restart --full
+
+# End every session, discard the workspace list, and start once in the home directory.
+wezterm restart --reset-workspaces
 ```
 
 The session-preserving mode is the default so that an AI agent can rebuild and
@@ -27,10 +30,10 @@ also rejected when the installed GUI and running mux server are protocol
 incompatible.
 
 The first build that introduces persistent sessions cannot migrate terminals
-that were already owned by an older GUI process. Perform one complete restart;
+that were already owned by an older GUI process. Perform one session restart;
 sessions opened by subsequent builds can then survive GUI restarts.
 
-A complete restart and a normal application quit still end the processes,
+A session restart and a normal application quit still end the processes,
 tabs, split panes, scrollback, and other terminal state. Before stopping the
 session host, Terminal Harbor records the active pane's working directory for
 each workspace. Opening those workspaces after relaunch creates one terminal in
@@ -50,11 +53,20 @@ have put it.
 With no explicit `--workspace`, a fresh GUI uses the configured default only
 when that mux workspace is still in the persisted Harbor registry; otherwise it
 starts in the first surviving row. This makes the registry authoritative after
-a workspace is closed. In particular, an empty mux server after a complete
+a workspace is closed. In particular, an empty mux server after a session
 restart must not recreate a configured default that the user removed.
 
 Launching with an explicit program or `--cwd` keeps that directory instead; only
 a plain launch, which is what the restart helper performs, is resumed.
+
+`Reset All Workspaces` and `wezterm restart --reset-workspaces` deliberately do
+not take that restoration path. Before stopping the session host, Terminal
+Harbor replaces the persisted workspace list with one newly identified
+workspace whose root and initial CWD are the user's home directory. Its display
+name is the final component of the home path. Sidebar visibility and width, the
+mobile pairing state, and settings outside the workspace registry are retained.
+The app menu asks for confirmation because this operation cannot recover the
+old sessions or workspace list; the explicit CLI flag does not prompt.
 
 ## Releases that require a full restart
 

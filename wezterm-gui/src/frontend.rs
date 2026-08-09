@@ -300,15 +300,22 @@ impl GuiFrontEnd {
 
                 match action {
                     KeyAssignment::RestartApplication => {
-                        if let Err(err) = crate::harbor_restart::restart_application(false) {
+                        if let Err(err) = crate::harbor_restart::restart_application(
+                            crate::harbor_restart::RestartMode::PreserveSessions,
+                        ) {
                             log::error!("restarting Terminal Harbor: {err:#}");
                         }
                     }
                     KeyAssignment::RestartApplicationFull => {
-                        if let Err(err) = crate::harbor_restart::restart_application(true) {
-                            log::error!("completely restarting Terminal Harbor: {err:#}");
+                        if let Err(err) = crate::harbor_restart::restart_application(
+                            crate::harbor_restart::RestartMode::RestoreWorkspaces,
+                        ) {
+                            log::error!("restarting Terminal Harbor sessions: {err:#}");
                         }
                     }
+                    KeyAssignment::RestartApplicationResetWorkspaces => log::warn!(
+                        "cannot confirm a workspace reset without an open Terminal Harbor window"
+                    ),
                     KeyAssignment::QuitApplication => {
                         // If we get here, there are no windows that could have received
                         // the QuitApplication command, therefore it must be ok to quit

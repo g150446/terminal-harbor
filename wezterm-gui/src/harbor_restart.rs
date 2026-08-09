@@ -9,12 +9,27 @@ use window::{Connection, ConnectionOps};
 static CONTROL_SERVER_STARTED: AtomicBool = AtomicBool::new(false);
 static RESTARTING: AtomicBool = AtomicBool::new(false);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestartMode {
+    PreserveSessions,
+    RestoreWorkspaces,
+    ResetWorkspaces,
+}
+
+impl RestartMode {
+    fn stops_session_host(self) -> bool {
+        self != Self::PreserveSessions
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct ControlRequest {
     version: u8,
     command: String,
     #[serde(default)]
     full: bool,
+    #[serde(default)]
+    reset_workspaces: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -35,7 +50,23 @@ fn sibling_binary(name: &str) -> anyhow::Result<std::path::PathBuf> {
     }))
 }
 
-fn prepare_restart(full: bool) -> anyhow::Result<()> {
+fn requested_mode(full: bool, reset_workspaces: bool) -> RestartMode {
+    if reset_workspaces {
+        RestartMode::ResetWorkspaces
+    } else if full {
+        RestartMode::RestoreWorkspaces
+    } else {
+        RestartMode::PreserveSessions
+    }
+}
+
+fn request_is_supported(request: &ControlRequest) -> bool {
+    matches!(request.version, 1 | 2)
+        && request.command == "restart"
+        && !(request.reset_workspaces && request.version < 2)
+}
+
+fn prepare_restart(mode: RestartMode) -> anyhow::Result<()> {
     if RESTARTING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -43,13 +74,14 @@ fn prepare_restart(full: bool) -> anyhow::Result<()> {
         bail!("a Terminal Harbor restart is already in progress");
     }
 
+    let mut workspace_reset = None;
     let result = (|| {
-        if full {
+        if mode == RestartMode::RestoreWorkspaces {
             crate::harbor_workspace::snapshot_workspace_cwds()
-                .context("save workspace directories before complete restart")?;
+                .context("save workspace directories before session restart")?;
         }
         let wezterm = sibling_binary("wezterm")?;
-        if !full {
+        if mode == RestartMode::PreserveSessions {
             let status = Command::new(&wezterm)
                 .arg("_check-harbor-mux")
                 .stdin(Stdio::null())
@@ -64,6 +96,13 @@ fn prepare_restart(full: bool) -> anyhow::Result<()> {
             }
         }
 
+        if mode == RestartMode::ResetWorkspaces {
+            workspace_reset = Some(
+                crate::harbor_workspace::reset_to_home_workspace()
+                    .context("replace workspaces with a new home workspace")?,
+            );
+        }
+
         let mut helper = Command::new(wezterm);
         helper
             .arg("_restart-helper")
@@ -74,7 +113,7 @@ fn prepare_restart(full: bool) -> anyhow::Result<()> {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        if full {
+        if mode.stops_session_host() {
             helper.arg("--full");
         }
         #[cfg(unix)]
@@ -88,10 +127,23 @@ fn prepare_restart(full: bool) -> anyhow::Result<()> {
         Ok(())
     })();
 
-    if result.is_err() {
-        RESTARTING.store(false, Ordering::SeqCst);
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let err = if let Some(reset) = workspace_reset {
+                match crate::harbor_workspace::restore_workspace_reset(reset) {
+                    Ok(()) => err,
+                    Err(restore_err) => err.context(format!(
+                        "also failed to restore the previous workspaces: {restore_err:#}"
+                    )),
+                }
+            } else {
+                err
+            };
+            RESTARTING.store(false, Ordering::SeqCst);
+            Err(err)
+        }
     }
-    result
 }
 
 fn terminate_gui() {
@@ -100,8 +152,8 @@ fn terminate_gui() {
     }
 }
 
-pub fn restart_application(full: bool) -> anyhow::Result<()> {
-    if let Err(err) = prepare_restart(full) {
+pub fn restart_application(mode: RestartMode) -> anyhow::Result<()> {
+    if let Err(err) = prepare_restart(mode) {
         wezterm_toast_notification::persistent_toast_notification(
             "Terminal Harbor restart failed",
             &format!("{err:#}"),
@@ -159,13 +211,14 @@ fn handle_control_stream(mut stream: std::os::unix::net::UnixStream) -> anyhow::
         .context("read restart request")?;
     let request: ControlRequest =
         serde_json::from_str(&request_line).context("parse restart request")?;
-    if request.version != 1 || request.command != "restart" {
+    if !request_is_supported(&request) {
         bail!("unsupported Terminal Harbor control request");
     }
 
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     promise::spawn::spawn_into_main_thread(async move {
-        tx.send(prepare_restart(request.full).map(|_| ())).ok();
+        let mode = requested_mode(request.full, request.reset_workspaces);
+        tx.send(prepare_restart(mode).map(|_| ())).ok();
     })
     .detach();
 
@@ -250,6 +303,11 @@ mod tests {
         assert_eq!(request.version, 1);
         assert_eq!(request.command, "restart");
         assert!(!request.full);
+        assert!(!request.reset_workspaces);
+        assert_eq!(
+            requested_mode(request.full, request.reset_workspaces),
+            RestartMode::PreserveSessions
+        );
     }
 
     #[test]
@@ -257,5 +315,28 @@ mod tests {
         let request: ControlRequest =
             serde_json::from_str(r#"{"version":1,"command":"restart"}"#).unwrap();
         assert!(!request.full);
+        assert!(!request.reset_workspaces);
+    }
+
+    #[test]
+    fn parses_workspace_reset_request() {
+        let request: ControlRequest = serde_json::from_str(
+            r#"{"version":2,"command":"restart","full":true,"reset_workspaces":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            requested_mode(request.full, request.reset_workspaces),
+            RestartMode::ResetWorkspaces
+        );
+        assert!(request_is_supported(&request));
+    }
+
+    #[test]
+    fn version_one_cannot_silently_downgrade_a_workspace_reset() {
+        let request: ControlRequest = serde_json::from_str(
+            r#"{"version":1,"command":"restart","full":true,"reset_workspaces":true}"#,
+        )
+        .unwrap();
+        assert!(!request_is_supported(&request));
     }
 }

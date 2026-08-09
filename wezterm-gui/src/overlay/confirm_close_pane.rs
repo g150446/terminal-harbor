@@ -67,3 +67,26 @@ pub fn confirm_quit_program(
 
     Ok(())
 }
+
+pub fn confirm_reset_workspaces(
+    mut term: TermWizTerminal,
+    window: ::window::Window,
+    tab_id: TabId,
+) -> anyhow::Result<()> {
+    if confirm::run_confirmation(
+        "Reset all workspaces? This will terminate every terminal session and permanently remove the workspace list. Terminal Harbor will restart with one workspace in your home directory.",
+        &mut term,
+    )? {
+        promise::spawn::spawn_into_main_thread(async move {
+            if let Err(err) = crate::harbor_restart::restart_application(
+                crate::harbor_restart::RestartMode::ResetWorkspaces,
+            ) {
+                log::error!("resetting Terminal Harbor workspaces: {err:#}");
+            }
+        })
+        .detach();
+    }
+    TermWindow::schedule_cancel_overlay(window, tab_id, None);
+
+    Ok(())
+}

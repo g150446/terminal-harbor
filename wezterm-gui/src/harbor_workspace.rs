@@ -35,6 +35,10 @@ struct PersistedWorkspaceState {
     workspaces: Vec<HarborWorkspace>,
 }
 
+pub struct WorkspaceReset {
+    workspaces: Vec<HarborWorkspace>,
+}
+
 impl Default for PersistedWorkspaceState {
     fn default() -> Self {
         Self {
@@ -430,6 +434,54 @@ pub fn snapshot_workspace_cwds() -> anyhow::Result<()> {
         save(&registry).context("saving Terminal Harbor workspace working directories")?;
     }
     Ok(())
+}
+
+fn replace_workspaces_with_home(
+    state: &mut PersistedWorkspaceState,
+    home: PathBuf,
+) -> WorkspaceReset {
+    let previous = std::mem::take(&mut state.workspaces);
+    let id = Uuid::new_v4();
+    let name = directory_name(&home).unwrap_or_else(|| "Workspace".to_string());
+    state.workspaces.push(HarborWorkspace {
+        id,
+        name: name.clone(),
+        root: Some(home.clone()),
+        last_cwd: Some(home),
+        mux_workspace: format!("harbor-{}-{name}", &id.simple().to_string()[..8]),
+        order: 0,
+    });
+    WorkspaceReset {
+        workspaces: previous,
+    }
+}
+
+/// Replace the persisted workspace list with a single new home workspace.
+///
+/// The returned value can restore the previous list when restart preparation
+/// fails before the GUI exits. Sidebar preferences are deliberately left
+/// untouched.
+pub fn reset_to_home_workspace() -> anyhow::Result<WorkspaceReset> {
+    let home = dirs_next::home_dir().context("resolve the home directory")?;
+    if !home.is_dir() {
+        anyhow::bail!("the home directory does not exist: {}", home.display());
+    }
+
+    let mut registry = REGISTRY.lock();
+    load_if_needed(&mut registry);
+    let reset = replace_workspaces_with_home(&mut registry.state, home);
+    if let Err(err) = save(&registry) {
+        registry.state.workspaces = reset.workspaces;
+        return Err(err).context("reset Terminal Harbor workspaces");
+    }
+    Ok(reset)
+}
+
+pub fn restore_workspace_reset(reset: WorkspaceReset) -> anyhow::Result<()> {
+    let mut registry = REGISTRY.lock();
+    load_if_needed(&mut registry);
+    registry.state.workspaces = reset.workspaces;
+    save(&registry).context("restore Terminal Harbor workspaces after restart failure")
 }
 
 /// The recorded directory to reopen a workspace in, if one still exists.
@@ -986,6 +1038,39 @@ mod tests {
             "unknown",
             PathBuf::from("/elsewhere")
         ));
+    }
+
+    #[test]
+    fn resetting_workspaces_keeps_preferences_and_creates_one_home_workspace() {
+        let old_workspace = HarborWorkspace {
+            id: Uuid::new_v4(),
+            name: "project".to_string(),
+            root: Some(PathBuf::from("/project")),
+            last_cwd: Some(PathBuf::from("/project/subdir")),
+            mux_workspace: "project".to_string(),
+            order: 0,
+        };
+        let mut state = PersistedWorkspaceState {
+            sidebar_visible: false,
+            sidebar_width: 640,
+            workspaces: vec![old_workspace.clone()],
+            ..PersistedWorkspaceState::default()
+        };
+        let home = PathBuf::from("/Users/example");
+
+        let reset = replace_workspaces_with_home(&mut state, home.clone());
+
+        assert!(!state.sidebar_visible);
+        assert_eq!(state.sidebar_width, 640);
+        assert_eq!(state.workspaces.len(), 1);
+        let workspace = &state.workspaces[0];
+        assert_eq!(workspace.name, "example");
+        assert_eq!(workspace.root.as_ref(), Some(&home));
+        assert_eq!(workspace.last_cwd.as_ref(), Some(&home));
+        assert_eq!(workspace.order, 0);
+        assert_ne!(workspace.id, old_workspace.id);
+        assert_ne!(workspace.mux_workspace, old_workspace.mux_workspace);
+        assert_eq!(reset.workspaces, vec![old_workspace]);
     }
 
     #[test]

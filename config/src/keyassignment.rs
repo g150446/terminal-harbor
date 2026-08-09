@@ -576,6 +576,7 @@ pub enum KeyAssignment {
     HideApplication,
     RestartApplication,
     RestartApplicationFull,
+    RestartApplicationResetWorkspaces,
     QuitApplication,
     SpawnCommandInNewTab(SpawnCommand),
     SpawnCommandInNewWindow(SpawnCommand),

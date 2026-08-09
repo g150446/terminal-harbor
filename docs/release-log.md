@@ -6,6 +6,35 @@
 
 ---
 
+## 2026-08-09 20:36 — 全ワークスペースのリセット再起動
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `7e164b4a26`（ブランチ `sidebar-agent-activity`、配置時点で本変更は未コミット） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-09 20:31 |
+| `wezterm-gui` | `d5e66a9e2d37e6a22a2a87d68ada7656a44b187277fa740f66cd81eecbe7e747` |
+| `wezterm` | `b321a45efe0fbf48de04e8e776aea4e3e69b18c0cb1599938ec8272df3d38fd5` |
+| `wezterm-mux-server` | `d664283582a0e858fa9f1dfa1341ff4a87c22a587584d597c41a569506a2b737` |
+| `strip-ansi-escapes` | `e5ba85a11a22b10e02a4cf49e98e9ae7218ee2647a1e4b592ac61abdcc5a6f0d` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、`--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-09 20:36 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260809-2033.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)、GUI PID `3529` → `8464` |
+
+アプリメニューを **Restart GUI (Keep Sessions)**、
+**Restart Sessions (Restore Workspaces)**、**Reset All Workspaces** の3操作に整理した。
+新しいリセット操作は確認後に全セッションと永続ワークスペース一覧を破棄し、ホームを
+ルートとする新規ワークスペース1件だけで再開する。CLIには非対話の
+`wezterm restart --reset-workspaces`、Luaには
+`RestartApplicationResetWorkspaces`を追加した。
+
+対象3クレートのcheck、再起動CLI 4件、再起動制御4件、Harbor 44件、release build、
+配置前後の署名・ハッシュ・CLI help、保持再起動後のGUI PID変更を確認した。
+nightly rustfmtの変更ファイルは整形済み。リポジトリ全体のformat checkは今回未変更の
+`harbor_mobile.rs`と`harbor_sidebar.rs`に既存差分があるため不合格で、無関係な整形は
+本変更へ含めていない。
+
 ## 2026-08-09 14:42 — 閉じた既定ワークスペースの再生成防止
 
 | 項目 | 値 |

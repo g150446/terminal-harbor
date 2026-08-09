@@ -11,7 +11,9 @@ source code, artwork, or other GPL-covered implementation is included.
 
 AI agents can apply a freshly built GUI without terminating their own terminal
 session by running `wezterm restart`. Use `wezterm restart --full` when mux or
-PTY changes also need to be loaded; see [Restarting Terminal Harbor](docs/restarting.md).
+PTY changes also need to be loaded while restoring workspaces, or
+`wezterm restart --reset-workspaces` to discard every workspace and start again
+from the home directory; see [Restarting Terminal Harbor](docs/restarting.md).
 Build, deployment, troubleshooting, and rollback procedures are documented in
 the [Terminal Harbor maintenance runbook](docs/maintenance.md).
 
@@ -66,7 +68,7 @@ cd /Users/example/projects/my-app
 サイドバーと永続状態から削除され、次のワークスペースへ自動的に移動します。
 末尾のワークスペースを閉じた場合は、ひとつ前へ移動します。タブのクローズでは
 実行中のプロセスがあっても確認画面を表示しません。タブが2個以上ある場合は
-現在のタブだけを閉じます。削除したワークスペースは、完全再起動後も復活しません。
+現在のタブだけを閉じます。削除したワークスペースは、復元付きセッション再起動後も復活しません。
 
 サイドバーを非表示にしてもワークスペースや実行中のプロセスは削除されません。
 
