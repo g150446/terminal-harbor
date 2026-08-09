@@ -221,6 +221,7 @@ fn summary_from_title(title: &str, agent: &str, process: Option<&str>) -> Option
 struct WorkspaceRegistry {
     state: PersistedWorkspaceState,
     loaded: bool,
+    reset_in_progress: bool,
 }
 
 lazy_static::lazy_static! {
@@ -470,8 +471,12 @@ pub fn reset_to_home_workspace() -> anyhow::Result<WorkspaceReset> {
     let mut registry = REGISTRY.lock();
     load_if_needed(&mut registry);
     let reset = replace_workspaces_with_home(&mut registry.state, home);
+    // The old mux remains alive until the restart helper takes over. Prevent a
+    // final sidebar paint from registering its active workspace again.
+    registry.reset_in_progress = true;
     if let Err(err) = save(&registry) {
         registry.state.workspaces = reset.workspaces;
+        registry.reset_in_progress = false;
         return Err(err).context("reset Terminal Harbor workspaces");
     }
     Ok(reset)
@@ -481,6 +486,7 @@ pub fn restore_workspace_reset(reset: WorkspaceReset) -> anyhow::Result<()> {
     let mut registry = REGISTRY.lock();
     load_if_needed(&mut registry);
     registry.state.workspaces = reset.workspaces;
+    registry.reset_in_progress = false;
     save(&registry).context("restore Terminal Harbor workspaces after restart failure")
 }
 
@@ -583,6 +589,20 @@ fn unique_name(registry: &WorkspaceRegistry, base: &str) -> String {
     unreachable!()
 }
 
+fn should_register_current_workspace(
+    registry: &WorkspaceRegistry,
+    active: &str,
+    workspace_is_empty: bool,
+) -> bool {
+    !registry.reset_in_progress
+        && !workspace_is_empty
+        && !registry
+            .state
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.mux_workspace == active)
+}
+
 pub fn ensure_current_workspace(mux_window_id: mux::window::WindowId) {
     let mux = Mux::get();
     let active = crate::frontend::try_front_end()
@@ -590,18 +610,11 @@ pub fn ensure_current_workspace(mux_window_id: mux::window::WindowId) {
         .unwrap_or_else(|| mux.active_workspace());
     let mut registry = REGISTRY.lock();
     load_if_needed(&mut registry);
-    if registry
-        .state
-        .workspaces
-        .iter()
-        .any(|workspace| workspace.mux_workspace == active)
-    {
-        return;
-    }
     // Window and tab teardown notifications can repaint before the frontend
     // finishes switching away. Never turn that transient empty mux workspace
-    // back into a persisted Harbor workspace.
-    if mux.is_workspace_empty(&active) {
+    // back into a persisted Harbor workspace. The same rule applies while a
+    // reset waits for the old GUI and session host to exit.
+    if !should_register_current_workspace(&registry, &active, mux.is_workspace_empty(&active)) {
         return;
     }
 
@@ -1017,6 +1030,7 @@ mod tests {
                 ..PersistedWorkspaceState::default()
             },
             loaded: true,
+            reset_in_progress: false,
         };
 
         assert!(!set_last_cwd(
@@ -1071,6 +1085,29 @@ mod tests {
         assert_ne!(workspace.id, old_workspace.id);
         assert_ne!(workspace.mux_workspace, old_workspace.mux_workspace);
         assert_eq!(reset.workspaces, vec![old_workspace]);
+    }
+
+    #[test]
+    fn workspace_reset_does_not_reregister_the_live_previous_workspace() {
+        let mut registry = WorkspaceRegistry::default();
+        registry.state.workspaces.push(HarborWorkspace {
+            id: Uuid::new_v4(),
+            name: "home".to_string(),
+            root: Some(PathBuf::from("/Users/example")),
+            last_cwd: Some(PathBuf::from("/Users/example")),
+            mux_workspace: "home".to_string(),
+            order: 0,
+        });
+        registry.reset_in_progress = true;
+
+        assert!(!should_register_current_workspace(
+            &registry, "default", false
+        ));
+
+        registry.reset_in_progress = false;
+        assert!(should_register_current_workspace(
+            &registry, "default", false
+        ));
     }
 
     #[test]

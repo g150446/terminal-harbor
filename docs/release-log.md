@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-08-09 21:03 — ワークスペースリセットの二重生成防止
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `01c72dbb2`（ブランチ `sidebar-agent-activity`、`wezterm-gui/src/harbor_workspace.rs` と本配置記録に未コミット変更あり） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-09 20:47 |
+| `wezterm-gui` | `13f6989e9e8ff9a37c26c4339b17bd47724e846e25ce738fa2d756df8a51d957` |
+| `wezterm` | `b321a45efe0fbf48de04e8e776aea4e3e69b18c0cb1599938ec8272df3d38fd5` |
+| `wezterm-mux-server` | `d664283582a0e858fa9f1dfa1341ff4a87c22a587584d597c41a569506a2b737` |
+| `strip-ansi-escapes` | `e5ba85a11a22b10e02a4cf49e98e9ae7218ee2647a1e4b592ac61abdcc5a6f0d` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-09 21:03 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260809-2102.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)、GUI PID `10517` → `13886`、mux PID `10523` を維持 |
+
+ワークスペース一覧をホーム1件へ置換してから旧GUIが終了するまでの間にサイドバー描画が
+走ると、生存中の旧muxワークスペースを未登録行として再追加していた。リセット準備中は
+現在ワークスペースの自動登録を凍結し、再起動準備が失敗して旧一覧を復元するときだけ
+解除するよう変更した。リセット中の旧ワークスペース再登録を防ぐ回帰テストを追加した。
+
+対象3クレートのcheck、再起動CLI 4件、再起動制御4件、Harbor 45件、
+GUI subcommand 2件、release build、`git diff --check`、配置前後の署名・ハッシュ・
+CLI helpに合格した。保持再起動後もmux PID、ペインID `0` / `1`、TTY
+`/dev/ttys000` / `/dev/ttys001` が維持された。nightly rustfmtの全体checkは今回
+未変更の `harbor_mobile.rs` と `harbor_sidebar.rs` にある既存整形差分だけを報告した。
+
 ## 2026-08-09 20:36 — 全ワークスペースのリセット再起動
 
 | 項目 | 値 |
