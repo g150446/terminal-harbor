@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-08-09 08:59 — ワークスペースCWDの完全再起動復元
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `b39f50c28`（ブランチ `sidebar-agent-activity`、配置時点では `AGENTS.md` と本ログがdirty） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-09 08:58 |
+| `wezterm-gui` | `d00da5117bbaecdd53a6abd6756f5ff532ce2968f9f16a2adb3456be3b5267b8` |
+| `wezterm` | `d43f1c54b33c587e9c009889d91d690ad8fe2a1445ad8a41934ae74ba8edad98` |
+| `wezterm-mux-server` | `4f9fc6cdbd0b9a80b0a2cd6536a350aa407c2ceaa8ed782dada29d2ac338f00e` |
+| `strip-ansi-escapes` | `e5ba85a11a22b10e02a4cf49e98e9ae7218ee2647a1e4b592ac61abdcc5a6f0d` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、`--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-09 08:59 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260809-0859.app` |
+| 必要な再起動方式 | **完全再起動** (`wezterm restart --full`) |
+
+完全再起動前に各ワークスペースのactive paneのCWDを保存し、再起動後にそのCWDで
+最初のターミナルを開く変更を配置した。アプリ変更時の完全バンドル配置を必須とする
+運用ルールも`AGENTS.md`へ追記した。雛形由来で実行ファイルが参照しない旧ANGLE
+ライブラリは完成バンドルから除外した。
+
 ## 2026-08-09 08:02 — サイドバーのエージェント表示
 
 | 項目 | 値 |

@@ -23,12 +23,12 @@ Harbor-specific code lives in:
 | `assets/macos/Terminal Harbor.app` | macOS bundle template |
 | `ci/deploy.sh` | Bundle assembly, signing, notarization |
 
-The sibling Flutter app lives at
-`/Users/kazami/projects/harbor/terminal-harbor-mobile` and has its own
-`AGENTS.md`. The HTTP contract is its `openapi/harbor-mobile.yaml`. Keep that
-file, the Rust handlers in `harbor_mobile.rs`, and the mobile client in
-agreement; the `/v1/workspaces/{id}/key` handler and its `terminal_key_code()`
-mapping define which terminal keys the API accepts.
+The sibling Flutter app lives at `../terminal-harbor-mobile`, alongside this
+repository, and has its own `AGENTS.md`. The HTTP contract is its
+`openapi/harbor-mobile.yaml`. Keep that file, the Rust handlers in
+`harbor_mobile.rs`, and the mobile client in agreement; the
+`/v1/workspaces/{id}/key` handler and its `terminal_key_code()` mapping define
+which terminal keys the API accepts.
 
 ## Process Model
 
@@ -89,6 +89,13 @@ depends on live pane state, verify it against the running app as well and say
 which of the two you did.
 
 ## Deployment & Restart
+
+Whenever a task changes the macOS application's code, resources, configuration,
+or bundled contents, finish the task by building a complete release bundle and
+replacing `/Applications/Terminal Harbor.app` with it. Do not treat a source
+change or a successful local build as deployed. Stage, sign, verify, and swap
+the whole bundle as described below, then use the restart mode required by the
+change. Record the deployment in `docs/release-log.md`.
 
 Never overwrite files inside the running bundle. Stage a complete bundle in a
 temporary directory, sign it, verify the signature, and only then swap it into
