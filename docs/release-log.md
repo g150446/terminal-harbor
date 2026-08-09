@@ -6,6 +6,39 @@
 
 ---
 
+## 2026-08-09 22:14 — セッションホストの初期ウィンドウ生成を停止
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `4705d98f4`（ブランチ `sidebar-agent-activity`、`wezterm-mux-server/src/main.rs`・`docs/restarting.md`・本配置記録に未コミット変更あり） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-09 22:13 |
+| `wezterm-gui` | `c3865647deaf2f029f8c2b483577c677015f83d5bd101b6c8cd2d59be22dfc03` |
+| `wezterm` | `962a0278603959b407d77e4b80293429e6fb839820e7f55c1ae210b6a553dd9b` |
+| `wezterm-mux-server` | `272f5ab0ea543a91bff014d6f90695e09d27118cb803a35e5cda2702930ff2f8` |
+| `strip-ansi-escapes` | `bc5c0b5ac092522a99c108e705c4f490fa3cb67d2f0cc95e1467be75a3bb83a6` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-09 22:14 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260809-2214.app` |
+| 必要な再起動方式 | 復元付きセッション再起動 (`wezterm restart --full`) または `--reset-workspaces`。muxサーバー自体の変更のため保持再起動では反映されない |
+
+`Reset All Workspaces` がワークスペースを2件生成していた。リセットは一覧をホーム1件へ
+置換してからセッションホストを停止するが、再起動後のセッションホストは起動時に
+mux既定ワークスペース `default` へ自前の初期ウィンドウを作っていた。GUIはドメインに
+ペインが既にあると自分ではspawnしないため、その `default` ペインを採用し、意図した
+`harbor-<id>-<name>` ワークスペースはペインなしのまま残り、サイドバー描画が `default`
+を2行目として登録していた。`--harbor-session-host` の場合は初期ウィンドウを作らず、
+ワークスペース名と起動ディレクトリを知っているGUIのspawnに委ねるよう変更した。単体の
+`wezterm-mux-server` の挙動は従来どおり。初期ウィンドウ生成条件の回帰テストを3件追加し、
+`docs/restarting.md` に責任分担を追記した。
+
+対象3クレートのcheck、mux-server harbor 3件、再起動CLI 4件、再起動制御4件、
+Harbor 45件、GUI subcommand 2件、release build、`git diff --check`、
+`cargo +nightly fmt -p wezterm-mux-server -- --check`、配置前後の署名検証と
+`wezterm restart --help` に合格した。配置時点では実行中のGUIとmuxが旧バイナリのため、
+`wezterm restart --full` 実行後の受け入れ確認（リセット後にワークスペースが1件だけ、
+かつホームディレクトリで開くこと）は未実施。
+
 ## 2026-08-09 21:03 — ワークスペースリセットの二重生成防止
 
 | 項目 | 値 |

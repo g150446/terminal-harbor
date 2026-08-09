@@ -50,6 +50,15 @@ for the one the application lands in. `startup_cwd()` deliberately has no home
 directory fallback, so a first ever launch still opens where the domain would
 have put it.
 
+The GUI owns that first window. A standalone `wezterm-mux-server` opens one on
+startup because nothing else would, but the session host started with
+`--harbor-session-host` deliberately does not: it waits for the GUI to spawn
+into the workspace the registry names. A session host that bootstrapped its own
+window would put it in the mux default workspace, and the GUI, which spawns
+nothing when the domain already has a pane, would adopt it — leaving the
+workspace it meant to open empty and registering an extra `default` row. That
+was how a workspace reset produced two workspaces instead of one.
+
 With no explicit `--workspace`, a fresh GUI uses the configured default only
 when that mux workspace is still in the persisted Harbor registry; otherwise it
 starts in the first surviving row. This makes the registry authoritative after

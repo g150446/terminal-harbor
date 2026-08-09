@@ -247,8 +247,9 @@ fn run() -> anyhow::Result<()> {
 
     let activity = Activity::new();
 
+    let harbor_session_host = opts.harbor_session_host;
     promise::spawn::spawn(async move {
-        if let Err(err) = async_run(cmd).await {
+        if let Err(err) = async_run(cmd, harbor_session_host).await {
             terminate_with_error(err);
         }
         drop(activity);
@@ -268,7 +269,20 @@ async fn trigger_mux_startup(lua: Option<Rc<mlua::Lua>>) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn async_run(cmd: Option<CommandBuilder>) -> anyhow::Result<()> {
+/// Whether the server opens its own first window on startup.
+///
+/// A standalone mux server is the only thing running, so it has to. The
+/// Terminal Harbor session host is spawned on demand by a GUI that already
+/// knows which workspace to open, and that startup window carries the name and
+/// directory from the persisted workspace registry. Bootstrapping here would
+/// land a window in the mux default workspace before the GUI spawns anything,
+/// and the GUI adopts that pane instead: the registry then gains a second,
+/// `default` row for a workspace nobody asked for.
+fn should_open_startup_window(have_panes_in_domain: bool, harbor_session_host: bool) -> bool {
+    !have_panes_in_domain && !harbor_session_host
+}
+
+async fn async_run(cmd: Option<CommandBuilder>, harbor_session_host: bool) -> anyhow::Result<()> {
     let mux = Mux::get();
     let config = config::configuration();
 
@@ -296,7 +310,7 @@ async fn async_run(cmd: Option<CommandBuilder>) -> anyhow::Result<()> {
         .iter()
         .any(|p| p.domain_id() == domain.domain_id());
 
-    if !have_panes_in_domain {
+    if should_open_startup_window(have_panes_in_domain, harbor_session_host) {
         let workspace = None;
         let position = None;
         let window_id = mux.new_empty_window(workspace, position);
@@ -344,4 +358,25 @@ pub fn spawn_listener(harbor_session_host: bool) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod harbor_tests {
+    use super::*;
+
+    #[test]
+    fn standalone_server_opens_its_own_first_window() {
+        assert!(should_open_startup_window(false, false));
+    }
+
+    #[test]
+    fn harbor_session_host_leaves_the_first_window_to_the_gui() {
+        assert!(!should_open_startup_window(false, true));
+    }
+
+    #[test]
+    fn a_server_that_already_has_panes_opens_nothing() {
+        assert!(!should_open_startup_window(true, false));
+        assert!(!should_open_startup_window(true, true));
+    }
 }
