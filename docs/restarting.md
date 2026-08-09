@@ -47,6 +47,12 @@ for the one the application lands in. `startup_cwd()` deliberately has no home
 directory fallback, so a first ever launch still opens where the domain would
 have put it.
 
+With no explicit `--workspace`, a fresh GUI uses the configured default only
+when that mux workspace is still in the persisted Harbor registry; otherwise it
+starts in the first surviving row. This makes the registry authoritative after
+a workspace is closed. In particular, an empty mux server after a complete
+restart must not recreate a configured default that the user removed.
+
 Launching with an explicit program or `--cwd` keeps that directory instead; only
 a plain launch, which is what the restart helper performs, is resumed.
 

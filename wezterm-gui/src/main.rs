@@ -801,10 +801,14 @@ fn run_terminal_gui(opts: StartCommand, default_domain_name: Option<String>) -> 
         None
     };
 
+    let startup_workspace = crate::harbor_workspace::startup_mux_workspace(
+        opts.workspace.as_deref(),
+        config.default_workspace.as_deref(),
+    );
     let mux = build_initial_mux(
         &config,
         default_domain_name.as_deref(),
-        opts.workspace.as_deref(),
+        startup_workspace.as_deref(),
     )?;
     if opts.domain.is_none() {
         install_harbor_persistent_domain(&mux)?;

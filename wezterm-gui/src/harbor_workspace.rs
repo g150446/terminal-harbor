@@ -465,6 +465,44 @@ pub fn startup_cwd(mux_workspace: &str) -> Option<PathBuf> {
         .and_then(saved_cwd)
 }
 
+fn select_startup_mux_workspace(
+    state: &PersistedWorkspaceState,
+    requested: Option<&str>,
+    configured: Option<&str>,
+) -> Option<String> {
+    if let Some(requested) = requested {
+        return Some(requested.to_string());
+    }
+    if state.workspaces.is_empty() {
+        return None;
+    }
+    configured
+        .filter(|configured| {
+            state
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.mux_workspace == *configured)
+        })
+        .map(str::to_string)
+        .or_else(|| {
+            state
+                .workspaces
+                .first()
+                .map(|workspace| workspace.mux_workspace.clone())
+        })
+}
+
+/// Select the mux workspace used for a fresh GUI process.
+///
+/// Once Harbor has persisted workspaces, that registry owns their lifecycle.
+/// A configured default that was explicitly closed must not be recreated just
+/// because a complete restart starts with an empty session host.
+pub fn startup_mux_workspace(requested: Option<&str>, configured: Option<&str>) -> Option<String> {
+    let mut registry = REGISTRY.lock();
+    load_if_needed(&mut registry);
+    select_startup_mux_workspace(&registry.state, requested, configured)
+}
+
 fn unique_name(registry: &WorkspaceRegistry, base: &str) -> String {
     let base = if base.trim().is_empty() {
         "Workspace"
@@ -999,6 +1037,51 @@ mod tests {
         };
 
         assert_eq!(saved_cwd(&workspace), None);
+    }
+
+    #[test]
+    fn startup_uses_a_surviving_workspace_instead_of_recreating_a_closed_default() {
+        let workspace = |mux_workspace: &str, order| HarborWorkspace {
+            id: Uuid::new_v4(),
+            name: mux_workspace.to_string(),
+            root: None,
+            last_cwd: None,
+            mux_workspace: mux_workspace.to_string(),
+            order,
+        };
+        let mut state = PersistedWorkspaceState {
+            workspaces: vec![workspace("default", 0), workspace("survivor", 1)],
+            ..PersistedWorkspaceState::default()
+        };
+
+        remove_workspace_from_state(&mut state, "default").unwrap();
+
+        assert_eq!(
+            select_startup_mux_workspace(&state, None, Some("default")).as_deref(),
+            Some("survivor")
+        );
+        assert_eq!(
+            select_startup_mux_workspace(&state, Some("requested"), Some("default")).as_deref(),
+            Some("requested")
+        );
+
+        state.workspaces.push(workspace("configured-survivor", 1));
+        assert_eq!(
+            select_startup_mux_workspace(&state, None, Some("configured-survivor")).as_deref(),
+            Some("configured-survivor")
+        );
+    }
+
+    #[test]
+    fn startup_leaves_first_launch_to_the_configured_mux_default() {
+        assert_eq!(
+            select_startup_mux_workspace(
+                &PersistedWorkspaceState::default(),
+                None,
+                Some("default")
+            ),
+            None
+        );
     }
 
     #[test]

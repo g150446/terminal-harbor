@@ -198,6 +198,13 @@ sidebar so every surviving persisted row is rebuilt in its new order. When the
 adjacent workspace has no live window, its replacement pane is spawned through
 the persistent default domain rather than depending on the pane being closed.
 
+A complete restart starts with an empty mux server. When no explicit
+`--workspace` was requested, startup uses the configured default only if it is
+still present in the Harbor registry, otherwise it opens the first surviving
+row. Falling back unconditionally to the mux default would create a live pane
+under the name of a closed default workspace, which the next sidebar paint
+would legitimately register again.
+
 ## OSC 7 and fallbacks
 
 Shell integration should emit OSC 7 whenever the prompt directory changes.
@@ -256,7 +263,7 @@ checked against it:
 - split panes with different CWDs show the selected pane's directory;
 - closing a non-final tab shows no confirmation and keeps the workspace row;
 - closing the final tab shows no confirmation, removes that workspace row, and
-  leaves every other row visible in order;
+  leaves every other row visible in order, including after a complete restart;
 - long and non-ASCII summaries truncate to one row so row heights stay even,
   and no full path is exposed.
 

@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-08-09 14:42 — 閉じた既定ワークスペースの再生成防止
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `d6d79deb83`（ブランチ `sidebar-agent-activity`、配置時点で本変更は未コミット） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-09 14:36 |
+| `wezterm-gui` | `ff8852747357bd70dc4473da80d433c1a26e7b782c02a13a6c3f9c928a2f0a22` |
+| `wezterm` | `b6d3045d222fbae4cc11b231f1983cc1b0467bd81e19c4486d6f22c90157b900` |
+| `wezterm-mux-server` | `ae6b01411a84d635d829ed781a04e5ccebdcf35bc1982b02c28080cd8761555c` |
+| `strip-ansi-escapes` | `588b153ee1dc6c77cb999b3b6635da5eab4a743fdc27adcf28e1119cfe21e291` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、`--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-09 14:42 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260809-1437.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)、GUI PID `80794` → `84866` |
+
+完全再起動で空になったmuxが設定上の既定名を無条件に生成し、削除済みの既定
+ワークスペースを次のサイドバー描画が再登録していた。永続レジストリにワークスペースが
+残る場合、設定上の既定名はまだ登録されているときだけ選び、削除済みなら最初の存続行を
+起動先にするよう変更した。明示的な`--workspace`と初回起動の既存挙動は維持する。
+nightly rustfmtの変更ファイル確認、対象3クレートのcheck、Harbor 41件と再起動4件を
+含むテスト、releaseビルド、配置後の署名・ハッシュ確認に合格した。
+
 ## 2026-08-09 14:04 — 最終タブとワークスペースの即時クローズ
 
 | 項目 | 値 |
