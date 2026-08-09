@@ -6,6 +6,38 @@
 
 ---
 
+## 2026-08-09 13:17 — エージェント名の`argv[0]`判定と起動時CWD復元
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `b39f50c28`（ブランチ `sidebar-agent-activity`、配置時点で未コミットの修正あり） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-09 09:50 |
+| `wezterm-gui` | `91477a4871da5b02aa3781b3b794a3785c968275f07039d5e6b87eac22c770cf` |
+| `wezterm` | `aff51e6e6d560b364f9836aeac49225a9065fcb8321f94550ba83e4e04ac0f74` |
+| `wezterm-mux-server` | `fcdc3bc6ad51bf5c044a9a9230ab7ac6ec32272f9e81243f0353cbdd8b3b2acd` |
+| `strip-ansi-escapes` | `f8f689d4594623c60a15405963254646e7eb4159974a351691797010c61be5ac` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、`--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-09 13:17 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260809-1317.app` |
+| 必要な再起動方式 | **完全再起動** (`wezterm restart --full`) |
+
+前回配置した2件が実機で動作しなかったため、その原因を修正した。
+
+サイドバーのエージェント判定を実行ファイル名から`argv[0]`へ変更した。Claude Codeは
+`~/.local/share/claude/versions/<version>`を実行しており、実行ファイル名も
+カーネルの`p_comm`もバージョン文字列になるため、`agent_label()`が一致せず
+何も表示されなかった。`LocalProcessInfo::command_name()`と
+`Pane::get_foreground_process_command_name`を追加し、mux serverが
+`TH_PANE_PROCESS`へ送る値を`argv[0]`優先にした。
+
+完全再起動後にアプリが開くワークスペースは、サイドバーではなく起動経路が
+ウィンドウを作るため`resume_cwd()`を通らず、CWDが復元されないままだった。
+`startup_cwd()`を追加して起動時の最初のペインへ渡すようにした。
+
+Codexの作業内容が出ないのはHarbor側ではなくCodexの設定で、`[tui] terminal_title`
+未設定のためタイトルを送っていないことが原因（`docs/harbor-sidebar.md`に記載）。
+
 ## 2026-08-09 08:59 — ワークスペースCWDの完全再起動復元
 
 | 項目 | 値 |

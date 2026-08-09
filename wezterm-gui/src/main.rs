@@ -334,12 +334,24 @@ async fn spawn_tab_in_domain_if_mux_is_empty(
         true
     });
 
+    // Reopen the workspace where it was left off. An explicit program brings
+    // its own directory, so only a plain launch is resumed; this is the path a
+    // complete restart comes back through.
+    let command_dir = if cmd.is_none() {
+        mux.get_window(window_id)
+            .map(|window| window.get_workspace().to_string())
+            .and_then(|workspace| crate::harbor_workspace::startup_cwd(&workspace))
+            .and_then(|path| path.to_str().map(str::to_string))
+    } else {
+        None
+    };
+
     let dpi = config.dpi.unwrap_or_else(|| ::window::default_dpi());
     let _tab = domain
         .spawn(
             config.initial_size(dpi as u32, Some(cell_pixel_dims(&config, dpi)?)),
             cmd,
-            None,
+            command_dir,
             window_id,
         )
         .await?;

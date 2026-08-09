@@ -420,14 +420,37 @@ pub fn snapshot_workspace_cwds() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn resume_cwd(workspace: &HarborWorkspace) -> Option<PathBuf> {
+/// The recorded directory to reopen a workspace in, if one still exists.
+/// Directories that have since been deleted are skipped rather than handed to
+/// a spawn that would fail.
+fn saved_cwd(workspace: &HarborWorkspace) -> Option<PathBuf> {
     workspace
         .last_cwd
         .as_ref()
         .filter(|path| path.is_dir())
         .or_else(|| workspace.root.as_ref().filter(|path| path.is_dir()))
         .cloned()
-        .or_else(dirs_next::home_dir)
+}
+
+pub fn resume_cwd(workspace: &HarborWorkspace) -> Option<PathBuf> {
+    saved_cwd(workspace).or_else(dirs_next::home_dir)
+}
+
+/// Directory for the first pane of the workspace the application opens into.
+///
+/// A complete restart stops the session host, so that workspace is recreated
+/// by the normal startup path rather than by the sidebar, and it is the one
+/// workspace that never passes through [`resume_cwd`]. Once its window exists
+/// activating it again only switches to it, so a directory missed here is
+/// missed until the next restart.
+///
+/// Unlike [`resume_cwd`] this returns `None` when nothing was recorded, which
+/// leaves the domain's own default in place for a first ever launch.
+pub fn startup_cwd(mux_workspace: &str) -> Option<PathBuf> {
+    workspaces()
+        .iter()
+        .find(|workspace| workspace.mux_workspace == mux_workspace)
+        .and_then(saved_cwd)
 }
 
 fn unique_name(registry: &WorkspaceRegistry, base: &str) -> String {
@@ -919,6 +942,39 @@ mod tests {
         assert_eq!(resume_cwd(&workspace).as_deref(), Some(saved.path()));
         workspace.last_cwd = Some(saved.path().join("missing"));
         assert_eq!(resume_cwd(&workspace).as_deref(), Some(root.path()));
+    }
+
+    #[test]
+    fn startup_keeps_the_domain_default_when_nothing_was_recorded() {
+        // resume_cwd falls back to the home directory so a sidebar click
+        // always lands somewhere. A first ever launch has no directory to
+        // restore, and must not be pushed to home instead of the default.
+        let workspace = HarborWorkspace {
+            id: Uuid::new_v4(),
+            name: "project".to_string(),
+            root: None,
+            last_cwd: None,
+            mux_workspace: "project".to_string(),
+            order: 0,
+        };
+
+        assert_eq!(saved_cwd(&workspace), None);
+        assert_eq!(resume_cwd(&workspace), dirs_next::home_dir());
+    }
+
+    #[test]
+    fn startup_skips_a_recorded_directory_that_no_longer_exists() {
+        let saved = tempfile::tempdir().unwrap();
+        let workspace = HarborWorkspace {
+            id: Uuid::new_v4(),
+            name: "project".to_string(),
+            root: None,
+            last_cwd: Some(saved.path().join("deleted")),
+            mux_workspace: "project".to_string(),
+            order: 0,
+        };
+
+        assert_eq!(saved_cwd(&workspace), None);
     }
 
     #[test]

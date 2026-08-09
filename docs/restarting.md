@@ -37,6 +37,19 @@ each workspace. Opening those workspaces after relaunch creates one terminal in
 the recorded directory. If that directory is no longer available, Terminal
 Harbor falls back to the workspace root and then the home directory.
 
+The workspace the application opens into is restored by the startup path rather
+than by the sidebar, because its window already exists by the time the sidebar
+is drawn and activating a workspace that has a window only switches to it. That
+window is spawned through `startup_cwd()` in `harbor_workspace.rs`. A directory
+missed there is missed until the next restart, so both paths have to stay
+wired: `resume_cwd()` for a workspace activated from the sidebar, `startup_cwd()`
+for the one the application lands in. `startup_cwd()` deliberately has no home
+directory fallback, so a first ever launch still opens where the domain would
+have put it.
+
+Launching with an explicit program or `--cwd` keeps that directory instead; only
+a plain launch, which is what the restart helper performs, is resumed.
+
 ## Releases that require a full restart
 
 Sidebar agent activity relies on the session host publishing `TH_PANE_PROCESS`
