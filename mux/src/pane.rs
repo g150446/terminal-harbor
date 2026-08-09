@@ -322,6 +322,13 @@ pub trait Pane: Downcast + Send + Sync {
     fn get_foreground_process_name(&self, _policy: CachePolicy) -> Option<String> {
         None
     }
+    /// The name the foreground process was invoked as, taken from `argv[0]`.
+    /// Unlike `get_foreground_process_name` this is not a path, and it stays
+    /// meaningful for programs whose executable image is named after its
+    /// version rather than the command.
+    fn get_foreground_process_command_name(&self, _policy: CachePolicy) -> Option<String> {
+        None
+    }
     fn get_foreground_process_info(
         &self,
         _policy: CachePolicy,

@@ -48,6 +48,18 @@ impl LocalProcessInfo {
         Some(OsStr::from_bytes(&vip_path[0..nul]).into())
     }
 
+    /// The name the process was invoked as, taken from `argv[0]`.
+    ///
+    /// This is not the same thing as the executable image name: a program
+    /// installed as a versioned image behind a symlink, as Claude Code is,
+    /// has an executable path whose file name is the version rather than the
+    /// command. The kernel's `p_comm` is derived from the image path and is
+    /// no help either, so `argv[0]` is the only place the command survives.
+    pub fn command_name(pid: u32) -> Option<String> {
+        let (_exe, argv) = exe_and_args_for_pid_sysctl(pid as _)?;
+        argv.into_iter().next()
+    }
+
     pub fn executable_path(pid: u32) -> Option<PathBuf> {
         let mut buffer: Vec<u8> = Vec::with_capacity(libc::PROC_PIDPATHINFO_MAXSIZE as _);
         let x = unsafe {
@@ -129,34 +141,6 @@ impl LocalProcessInfo {
             LocalProcessInfo::current_working_dir(pid as _).unwrap_or_else(PathBuf::new)
         }
 
-        fn exe_and_args_for_pid_sysctl(pid: libc::pid_t) -> Option<(PathBuf, Vec<String>)> {
-            use libc::c_int;
-            let mut size = 64 * 1024;
-            let mut buf: Vec<u8> = Vec::with_capacity(size);
-            let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as c_int];
-
-            let res = unsafe {
-                libc::sysctl(
-                    mib.as_mut_ptr(),
-                    mib.len() as _,
-                    buf.as_mut_ptr() as *mut _,
-                    &mut size,
-                    std::ptr::null_mut(),
-                    0,
-                )
-            };
-            if res == -1 {
-                return None;
-            }
-            if size < (std::mem::size_of::<c_int>() * 2) {
-                // Not big enough
-                return None;
-            }
-            unsafe { buf.set_len(size) };
-
-            parse_exe_and_argv_sysctl(buf)
-        }
-
         fn exe_for_pid(pid: libc::pid_t) -> PathBuf {
             LocalProcessInfo::executable_path(pid as _).unwrap_or_else(PathBuf::new)
         }
@@ -204,6 +188,34 @@ impl LocalProcessInfo {
             None
         }
     }
+}
+
+fn exe_and_args_for_pid_sysctl(pid: libc::pid_t) -> Option<(PathBuf, Vec<String>)> {
+    use libc::c_int;
+    let mut size = 64 * 1024;
+    let mut buf: Vec<u8> = Vec::with_capacity(size);
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as c_int];
+
+    let res = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as _,
+            buf.as_mut_ptr() as *mut _,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if res == -1 {
+        return None;
+    }
+    if size < (std::mem::size_of::<c_int>() * 2) {
+        // Not big enough
+        return None;
+    }
+    unsafe { buf.set_len(size) };
+
+    parse_exe_and_argv_sysctl(buf)
 }
 
 fn parse_exe_and_argv_sysctl(buf: Vec<u8>) -> Option<(PathBuf, Vec<String>)> {
@@ -256,6 +268,7 @@ mod tests {
     use std::path::Path;
 
     use super::parse_exe_and_argv_sysctl;
+    use crate::LocalProcessInfo;
 
     #[test]
     fn test_trailing_zeros() {
@@ -326,5 +339,20 @@ mod tests {
         ];
 
         assert!(parse_exe_and_argv_sysctl(buf).is_none());
+    }
+
+    #[test]
+    fn command_name_reads_argv0_of_a_live_process() {
+        let name = LocalProcessInfo::command_name(std::process::id())
+            .expect("argv[0] of this test binary");
+        assert!(!name.is_empty());
+        // The test harness is invoked by path, so argv[0] carries one.
+        assert!(name.contains("procinfo"), "unexpected argv[0]: {name}");
+    }
+
+    #[test]
+    fn command_name_is_absent_for_a_pid_that_does_not_exist() {
+        // Pid 0 is the kernel and has no argv to read.
+        assert_eq!(LocalProcessInfo::command_name(0), None);
     }
 }

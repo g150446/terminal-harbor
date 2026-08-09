@@ -356,6 +356,19 @@ impl LocalProcessInfo {
         proc.executable()
     }
 
+    /// The name the process was invoked as, taken from `argv[0]`.
+    /// See the macOS implementation for why this is not the executable name.
+    pub fn command_name(pid: u32) -> Option<String> {
+        log::trace!("command_name({})", pid);
+        let proc = ProcHandle::new(pid)?;
+        let params = proc.get_params()?;
+        params
+            .argv
+            .into_iter()
+            .next()
+            .filter(|argv0| !argv0.is_empty())
+    }
+
     pub fn with_root_pid(pid: u32) -> Option<Self> {
         log::trace!("LocalProcessInfo::with_root_pid({}), getting snapshot", pid);
         let procs = Snapshot::entries();

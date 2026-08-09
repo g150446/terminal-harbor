@@ -50,20 +50,38 @@ Agent name, in order:
 1. A non-empty `TH_AGENT_NAME` user var, used verbatim. The
    `wezterm workspace status --agent <name>` protocol accepts any agent name,
    so this path is not restricted to the known list.
-2. The foreground process basename via `pane_process_name()`, but only when
+2. The foreground process name via `pane_process_name()`, but only when
    `agent_label()` matches `KNOWN_AGENTS` (`claude`, `codex`, `opencode`).
    Add new agents there.
 3. Otherwise no agent is running and the row stays at one line.
 
+### Why the process name comes from `argv[0]`
+
+The name is `argv[0]`, not the executable image, and neither is a synonym for
+the other. Claude Code installs itself as
+`~/.local/share/claude/versions/<version>` with a `claude` symlink in front, so
+the image basename is a version string such as `2.1.226`; the kernel's `p_comm`
+is derived from the same path and reports the version too. Only `argv[0]`
+carries the word `claude`, so matching on the image alone made Claude Code
+invisible to `agent_label()` while Codex, whose image really is named `codex`,
+matched.
+
+`LocalProcessInfo::command_name()` reads it — `KERN_PROCARGS2` on macOS,
+`/proc/<pid>/cmdline` on Linux, the PEB on Windows — and
+`Pane::get_foreground_process_command_name` exposes it, cached in
+`CachedLeaderInfo` next to the image path so it shares one `tcgetpgrp` and one
+TTL. `process_label()` in the mux server strips the leading `-` of a login
+shell and falls back to the image basename when `argv[0]` is unavailable.
+
 ### Why the foreground process needs the mux server
 
-`Pane::get_foreground_process_name` is implemented only on `LocalPane`
+The process inspection behind both names is implemented only on `LocalPane`
 (`mux/src/localpane.rs`). The GUI attaches to the persistent mux server as a
 client, so every pane it sees is a `ClientPane`, which inherits the default
-trait impl returning `None` (`mux/src/pane.rs`). Confirm the topology with
+trait impls returning `None` (`mux/src/pane.rs`). Confirm the topology with
 `wezterm cli list-clients`: the GUI's own pid appears as a connected client.
 
-The server therefore relays the basename as the `TH_PANE_PROCESS` user var from
+The server therefore relays the name as the `TH_PANE_PROCESS` user var from
 `maybe_push_pane_changes()` in
 `wezterm-mux-server-impl/src/sessionhandler.rs`, which already runs per pane on
 activity. `PerPane::foreground_process` holds the last value so the alert is
@@ -90,7 +108,17 @@ Task summary, in order:
 2. The pane title, via `summary_from_title()`.
 
 Agents publish their current task as the pane title (OSC 0/2), which is why no
-transcript parsing or screen scraping is involved. `summary_from_title()`
+transcript parsing or screen scraping is involved.
+
+Whether an agent does publish one is the agent's own setting, and an agent that
+stays silent gets a name line and no summary — the sidebar cannot invent what
+was never sent. Claude Code writes its task to the title with no configuration.
+Codex does not until `[tui] terminal_title` is set in `~/.codex/config.toml`,
+which its `/terminal-title` command writes; `thread-title` and `task-progress`
+are the items that carry the work, and `activity` adds the spinner
+`strip_status_glyphs()` already removes.
+
+`summary_from_title()`
 rejects titles that carry no task information: empty strings, the agent's own
 name (opencode titles itself `OpenCode`), the foreground process name, and
 shell names. `LocalPane::get_title` substitutes the process name for the

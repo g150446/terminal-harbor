@@ -55,6 +55,35 @@ pub(crate) struct PerPane {
 /// an AI agent, is running in a pane.
 pub const PANE_PROCESS_USER_VAR: &str = "TH_PANE_PROCESS";
 
+/// The program running in the foreground of `pane`, as a bare name.
+fn foreground_process_label(pane: &Arc<dyn Pane>) -> Option<String> {
+    process_label(
+        pane.get_foreground_process_command_name(CachePolicy::AllowStale),
+        pane.get_foreground_process_name(CachePolicy::AllowStale),
+    )
+}
+
+/// Reduce a foreground process to the name worth showing.
+///
+/// `argv[0]` is preferred over the executable image because an image is not
+/// always named after its command: Claude Code installs itself as
+/// `~/.local/share/claude/versions/<version>`, so the image file name is a
+/// version string, and the kernel's `p_comm`, derived from that same path, is
+/// no better. A leading `-`, which marks a login shell, is not part of the
+/// name.
+fn process_label(command: Option<String>, image: Option<String>) -> Option<String> {
+    fn base_name(value: &str) -> Option<String> {
+        std::path::Path::new(value)
+            .file_name()
+            .map(|part| part.to_string_lossy().into_owned())
+            .filter(|part| !part.is_empty())
+    }
+
+    command
+        .and_then(|name| base_name(name.strip_prefix('-').unwrap_or(&name)))
+        .or_else(|| image.as_deref().and_then(base_name))
+}
+
 impl PerPane {
     fn compute_changes(
         &mut self,
@@ -166,14 +195,7 @@ fn maybe_push_pane_changes(
     // Relay the foreground process to the client as a user var. The proc info
     // behind this is already rate limited by its own cache TTL, and the alert
     // is only synthesized when the value actually changes.
-    let foreground_process = pane.get_foreground_process_name(CachePolicy::AllowStale).map(
-        |name| {
-            std::path::Path::new(&name)
-                .file_name()
-                .map(|part| part.to_string_lossy().into_owned())
-                .unwrap_or(name)
-        },
-    );
+    let foreground_process = foreground_process_label(pane);
     if foreground_process != per_pane.foreground_process {
         per_pane.foreground_process = foreground_process.clone();
         per_pane.notifications.push(Alert::SetUserVar {
@@ -1150,4 +1172,58 @@ async fn move_pane(
         tab_id: tab.tab_id(),
         window_id,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::process_label;
+
+    #[test]
+    fn command_name_wins_over_a_version_named_image() {
+        // Claude Code's image is ~/.local/share/claude/versions/<version>,
+        // so the image basename identifies nothing the sidebar can match.
+        assert_eq!(
+            process_label(
+                Some("claude".to_string()),
+                Some("/Users/example/.local/share/claude/versions/2.1.226".to_string()),
+            )
+            .as_deref(),
+            Some("claude")
+        );
+    }
+
+    #[test]
+    fn login_shell_dash_is_not_part_of_the_name() {
+        assert_eq!(
+            process_label(Some("-zsh".to_string()), Some("/bin/zsh".to_string())).as_deref(),
+            Some("zsh")
+        );
+    }
+
+    #[test]
+    fn a_command_path_is_reduced_to_its_basename() {
+        assert_eq!(
+            process_label(
+                Some("/Users/example/.local/bin/codex".to_string()),
+                Some("/Users/example/.codex/bin/codex".to_string()),
+            )
+            .as_deref(),
+            Some("codex")
+        );
+    }
+
+    #[test]
+    fn the_image_is_used_when_no_command_name_is_available() {
+        // Clients that cannot read argv fall back to the executable image
+        // rather than reporting nothing at all.
+        assert_eq!(
+            process_label(None, Some("/bin/zsh".to_string())).as_deref(),
+            Some("zsh")
+        );
+        assert_eq!(
+            process_label(Some(String::new()), Some("/bin/zsh".to_string())).as_deref(),
+            Some("zsh")
+        );
+        assert_eq!(process_label(None, None), None);
+    }
 }

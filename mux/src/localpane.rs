@@ -74,6 +74,7 @@ struct CachedLeaderInfo {
     fd: std::os::fd::RawFd,
     pid: u32,
     path: Option<std::path::PathBuf>,
+    command_name: Option<String>,
     current_working_dir: Option<std::path::PathBuf>,
     updating: bool,
 }
@@ -86,6 +87,7 @@ impl CachedLeaderInfo {
             fd: fd.unwrap_or(-1),
             pid: 0,
             path: None,
+            command_name: None,
             current_working_dir: None,
             updating: false,
         };
@@ -101,9 +103,11 @@ impl CachedLeaderInfo {
         self.pid = unsafe { libc::tcgetpgrp(self.fd) } as u32;
         if self.pid > 0 {
             self.path = LocalProcessInfo::executable_path(self.pid);
+            self.command_name = LocalProcessInfo::command_name(self.pid);
             self.current_working_dir = LocalProcessInfo::current_working_dir(self.pid);
         } else {
             self.path.take();
+            self.command_name.take();
             self.current_working_dir.take();
         }
         self.updated = Instant::now();
@@ -556,6 +560,19 @@ impl Pane for LocalPane {
 
         #[allow(unreachable_code)]
         None
+    }
+
+    fn get_foreground_process_command_name(&self, policy: CachePolicy) -> Option<String> {
+        #[cfg(unix)]
+        {
+            return self.get_leader(policy).command_name;
+        }
+
+        #[cfg(windows)]
+        {
+            self.divine_foreground_process(policy)
+                .and_then(|fg| fg.argv.into_iter().next())
+        }
     }
 
     fn can_close_without_prompting(&self, _reason: CloseReason) -> bool {

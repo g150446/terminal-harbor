@@ -125,21 +125,27 @@ fn is_status_glyph(ch: char) -> bool {
 /// Must match `wezterm_mux_server_impl::sessionhandler::PANE_PROCESS_USER_VAR`.
 pub const PANE_PROCESS_USER_VAR: &str = "TH_PANE_PROCESS";
 
-/// Foreground process basename for a pane.
+/// Foreground process name for a pane.
 ///
-/// `Pane::get_foreground_process_name` is only implemented for local panes. A
+/// The process inspection behind this is only implemented for local panes. A
 /// GUI attached to the persistent mux server sees `ClientPane`s, which return
 /// `None`, so fall back to the user var the server relays for us.
+///
+/// `argv[0]` comes first for the same reason the server prefers it: an
+/// executable image is not always named after the command that started it.
 pub fn pane_process_name(
     pane: &std::sync::Arc<dyn mux::pane::Pane>,
     vars: &std::collections::HashMap<String, String>,
 ) -> Option<String> {
-    pane.get_foreground_process_name(CachePolicy::AllowStale)
+    pane.get_foreground_process_command_name(CachePolicy::AllowStale)
+        .map(|name| name.strip_prefix('-').unwrap_or(&name).to_string())
+        .or_else(|| pane.get_foreground_process_name(CachePolicy::AllowStale))
         .and_then(|name| {
             Path::new(&name)
                 .file_name()
                 .map(|part| part.to_string_lossy().into_owned())
         })
+        .filter(|name| !name.is_empty())
         .or_else(|| {
             vars.get(PANE_PROCESS_USER_VAR)
                 .map(|value| value.trim())

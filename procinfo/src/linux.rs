@@ -28,6 +28,17 @@ impl LocalProcessInfo {
         std::fs::read_link(format!("/proc/{}/exe", pid)).ok()
     }
 
+    /// The name the process was invoked as, taken from `argv[0]`.
+    /// See the macOS implementation for why this is not the executable name.
+    pub fn command_name(pid: u32) -> Option<String> {
+        let cmdline = std::fs::read(format!("/proc/{}/cmdline", pid)).ok()?;
+        let argv0 = cmdline.split(|&c| c == 0).next()?;
+        if argv0.is_empty() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(argv0).into_owned())
+    }
+
     pub fn with_root_pid(pid: u32) -> Option<Self> {
         use libc::pid_t;
 
