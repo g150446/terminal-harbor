@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-08-09 14:04 — 最終タブとワークスペースの即時クローズ
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `6f25c0179`（ブランチ `sidebar-agent-activity`、配置時点で本変更は未コミット） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-09 13:57 |
+| `wezterm-gui` | `01fd437f443de2be0f81bdd75079b767da3a1bd3fbbef8663d1e6863286388ea` |
+| `wezterm` | `c47f2573a70e4d492cc6ffac730ee45c415f73d1bee0ce6191917af3dba85b89` |
+| `wezterm-mux-server` | `b87592db2a1d33577b710c99bb996756d8b208d3b8e801e6bfd9ac2b9fcf0916` |
+| `strip-ansi-escapes` | `e5ba85a11a22b10e02a4cf49e98e9ae7218ee2647a1e4b592ac61abdcc5a6f0d` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、`--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-09 14:04 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260809-1400.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`) |
+
+タブのクローズ確認を廃止し、最後のタブでは永続化登録も削除するようにした。
+削除中の空muxワークスペースを再登録せず、物理ウィンドウが隣接ワークスペースへ
+切り替わる際にサイドバーキャッシュを破棄することで、削除済み行の復活と残存行の
+表示欠落を防いだ。変更箇所のnightly rustfmt、対象3クレートのcheck、
+Harbor 39件と再起動4件を含むテスト、releaseビルドに合格した。
+
 ## 2026-08-09 13:17 — エージェント名の`argv[0]`判定と起動時CWD復元
 
 | 項目 | 値 |

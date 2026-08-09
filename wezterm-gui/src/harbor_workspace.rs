@@ -117,7 +117,19 @@ fn is_status_glyph(ch: char) -> bool {
         || matches!(ch, '\u{2800}'..='\u{28FF}')
         || matches!(
             ch,
-            '✳' | '✻' | '✽' | '✶' | '✢' | '·' | '●' | '○' | '◐' | '◓' | '▪' | '⏵' | '*' | '⠿'
+            '✳' | '✻'
+                | '✽'
+                | '✶'
+                | '✢'
+                | '·'
+                | '●'
+                | '○'
+                | '◐'
+                | '◓'
+                | '▪'
+                | '⏵'
+                | '*'
+                | '⠿'
         )
 }
 
@@ -496,6 +508,12 @@ pub fn ensure_current_workspace(mux_window_id: mux::window::WindowId) {
     {
         return;
     }
+    // Window and tab teardown notifications can repaint before the frontend
+    // finishes switching away. Never turn that transient empty mux workspace
+    // back into a persisted Harbor workspace.
+    if mux.is_workspace_empty(&active) {
+        return;
+    }
 
     let root = mux
         .get_active_tab_for_window(mux_window_id)
@@ -564,28 +582,34 @@ pub fn workspace_with_mux_name(mux_workspace: &str) -> Option<HarborWorkspace> {
         .find(|workspace| workspace.mux_workspace == mux_workspace)
 }
 
-pub fn remove_workspace(mux_workspace: &str) -> Option<HarborWorkspace> {
-    let mut registry = REGISTRY.lock();
-    load_if_needed(&mut registry);
-    let index = registry
-        .state
+fn remove_workspace_from_state(
+    state: &mut PersistedWorkspaceState,
+    mux_workspace: &str,
+) -> Option<(HarborWorkspace, Option<HarborWorkspace>)> {
+    let index = state
         .workspaces
         .iter()
         .position(|workspace| workspace.mux_workspace == mux_workspace)?;
-    registry.state.workspaces.remove(index);
-    for (order, workspace) in registry.state.workspaces.iter_mut().enumerate() {
+    let removed = state.workspaces.remove(index);
+    for (order, workspace) in state.workspaces.iter_mut().enumerate() {
         workspace.order = order;
     }
-    let next = registry
-        .state
+    let next = state
         .workspaces
         .get(index)
         .or_else(|| {
             index
                 .checked_sub(1)
-                .and_then(|index| registry.state.workspaces.get(index))
+                .and_then(|index| state.workspaces.get(index))
         })
         .cloned();
+    Some((removed, next))
+}
+
+pub fn remove_workspace(mux_workspace: &str) -> Option<HarborWorkspace> {
+    let mut registry = REGISTRY.lock();
+    load_if_needed(&mut registry);
+    let (_, next) = remove_workspace_from_state(&mut registry.state, mux_workspace)?;
     if let Err(err) = save(&registry) {
         log::error!("saving Terminal Harbor workspace removal: {err:#}");
     }
@@ -982,6 +1006,43 @@ mod tests {
         assert_eq!(relative_index(0, -1, 3), 2);
         assert_eq!(relative_index(2, 1, 3), 0);
         assert_eq!(relative_index(1, 1, 3), 2);
+    }
+
+    #[test]
+    fn removing_workspace_keeps_remaining_rows_in_order() {
+        let workspace = |name: &str, order| HarborWorkspace {
+            id: Uuid::new_v4(),
+            name: name.to_string(),
+            root: None,
+            last_cwd: None,
+            mux_workspace: name.to_string(),
+            order,
+        };
+        let mut state = PersistedWorkspaceState {
+            workspaces: vec![
+                workspace("first", 0),
+                workspace("middle", 1),
+                workspace("last", 2),
+            ],
+            ..PersistedWorkspaceState::default()
+        };
+
+        let (removed, next) = remove_workspace_from_state(&mut state, "middle").unwrap();
+
+        assert_eq!(removed.mux_workspace, "middle");
+        assert_eq!(next.unwrap().mux_workspace, "last");
+        assert_eq!(
+            state
+                .workspaces
+                .iter()
+                .map(|workspace| (workspace.mux_workspace.as_str(), workspace.order))
+                .collect::<Vec<_>>(),
+            vec![("first", 0), ("last", 1)]
+        );
+
+        let (_, next) = remove_workspace_from_state(&mut state, "last").unwrap();
+        assert_eq!(next.unwrap().mux_workspace, "first");
+        assert_eq!(state.workspaces[0].order, 0);
     }
 
     #[test]

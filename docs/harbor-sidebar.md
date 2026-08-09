@@ -172,6 +172,8 @@ invalidate the window:
 - `MuxNotification::PaneFocused` after selecting another split pane;
 - `MuxNotification::WindowInvalidated`, which covers active-tab and structural
   window changes;
+- `TermWindowNotif::SwitchToMuxWindow`, because the physical window is reused
+  for the adjacent workspace after the final tab closes;
 - `Alert::WindowTitleChanged`, but only when the stripped title differs from
   the cached one for that pane. `MuxNotification::PaneRemoved` drops the pane's
   cache entry.
@@ -179,6 +181,22 @@ invalidate the window:
 If a new tab-activation path is introduced without one of these notifications,
 explicitly invalidate the Harbor sidebar there. Do not rebuild the sidebar on
 every paint frame; the cached layout is intentional.
+
+## Tab and workspace close lifecycle
+
+Closing a tab is immediate and never opens a confirmation overlay. When it is
+the workspace's final tab, Terminal Harbor removes the persisted workspace
+entry, activates the following row (or the preceding row at the end), and then
+terminates the tab. The workspace owning a tab is resolved from its mux window,
+not from the frontend's transient active-workspace value during a switch.
+
+`ensure_current_workspace()` must not persist an empty mux workspace. Teardown
+notifications can repaint the old physical window before workspace
+reconciliation completes; registering that empty name would resurrect the
+workspace that was just closed. The switch notification invalidates the cached
+sidebar so every surviving persisted row is rebuilt in its new order. When the
+adjacent workspace has no live window, its replacement pane is spawned through
+the persistent default domain rather than depending on the pane being closed.
 
 ## OSC 7 and fallbacks
 
@@ -236,6 +254,9 @@ checked against it:
 - `cd` updates line 1 after the next prompt;
 - tabs with different CWDs show the selected tab's directory;
 - split panes with different CWDs show the selected pane's directory;
+- closing a non-final tab shows no confirmation and keeps the workspace row;
+- closing the final tab shows no confirmation, removes that workspace row, and
+  leaves every other row visible in order;
 - long and non-ASCII summaries truncate to one row so row heights stay even,
   and no full path is exposed.
 

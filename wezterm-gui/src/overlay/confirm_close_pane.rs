@@ -1,12 +1,10 @@
 use super::confirm;
-use crate::termwindow::TermWindowNotif;
 use crate::TermWindow;
 use mux::pane::PaneId;
 use mux::tab::TabId;
 use mux::termwiztermtab::TermWizTerminal;
 use mux::window::WindowId;
 use mux::Mux;
-use window::WindowOps;
 
 pub fn confirm_close_pane(
     pane_id: PaneId,
@@ -26,45 +24,6 @@ pub fn confirm_close_pane(
         .detach();
     }
     TermWindow::schedule_cancel_overlay_for_pane(window, pane_id);
-
-    Ok(())
-}
-
-pub fn confirm_close_tab(
-    tab_id: TabId,
-    mut term: TermWizTerminal,
-    _mux_window_id: WindowId,
-    window: ::window::Window,
-) -> anyhow::Result<()> {
-    if confirm::run_confirmation(
-        "🛑 Really kill this tab and all contained panes?",
-        &mut term,
-    )? {
-        promise::spawn::spawn_into_main_thread(async move {
-            let mux = Mux::get();
-            mux.remove_tab(tab_id);
-        })
-        .detach();
-    }
-    TermWindow::schedule_cancel_overlay(window, tab_id, None);
-
-    Ok(())
-}
-
-pub fn confirm_close_workspace(
-    tab_id: TabId,
-    mut term: TermWizTerminal,
-    window: ::window::Window,
-) -> anyhow::Result<()> {
-    if confirm::run_confirmation(
-        "🛑 Really close this workspace and all contained panes?",
-        &mut term,
-    )? {
-        window.notify(TermWindowNotif::Apply(Box::new(|term_window| {
-            term_window.harbor_close_current_workspace_now();
-        })));
-    }
-    TermWindow::schedule_cancel_overlay(window, tab_id, None);
 
     Ok(())
 }

@@ -5,9 +5,9 @@ use crate::colorease::ColorEase;
 use crate::frontend::{front_end, try_front_end};
 use crate::inputmap::InputMap;
 use crate::overlay::{
-    confirm_close_pane, confirm_close_tab, confirm_close_window, confirm_close_workspace,
-    confirm_quit_program, launcher, start_overlay, start_overlay_pane, CopyModeParams, CopyOverlay,
-    LauncherArgs, LauncherFlags, QuickSelectOverlay,
+    confirm_close_pane, confirm_close_window, confirm_quit_program, launcher, start_overlay,
+    start_overlay_pane, CopyModeParams, CopyOverlay, LauncherArgs, LauncherFlags,
+    QuickSelectOverlay,
 };
 use crate::resize_increment_calculator::ResizeIncrementCalculator;
 use crate::scripting::guiwin::GuiWin;
@@ -494,6 +494,11 @@ impl TermWindow {
     }
 
     fn close_requested(&mut self, window: &Window) {
+        if self.harbor_workspace_has_single_tab() {
+            self.harbor_close_current_workspace_now();
+            return;
+        }
+
         let mux = Mux::get();
         match self.config.window_close_confirmation {
             WindowCloseConfirmation::NeverPrompt => {
@@ -1421,6 +1426,7 @@ impl TermWindow {
                 self.clear_all_overlays();
                 self.current_highlight.take();
                 self.invalidate_fancy_tab_bar();
+                self.invalidate_harbor_sidebar();
                 self.invalidate_modal();
 
                 let mux = Mux::get();
@@ -3355,10 +3361,11 @@ impl TermWindow {
         }
     }
 
-    fn close_specific_tab(&mut self, tab_idx: usize, confirm: bool) {
+    // Keep the assignment's `confirm` argument for config compatibility, but
+    // Harbor tab closes are deliberately immediate.
+    fn close_specific_tab(&mut self, tab_idx: usize, _confirm: bool) {
         let mux = Mux::get();
-        let mux_window_id = self.mux_window_id;
-        let mux_window = match mux.get_window(mux_window_id) {
+        let mux_window = match mux.get_window(self.mux_window_id) {
             Some(w) => w,
             None => return,
         };
@@ -3371,52 +3378,33 @@ impl TermWindow {
 
         let tab_id = tab.tab_id();
         if self.harbor_workspace_has_single_tab() {
-            self.close_current_workspace(tab, confirm);
+            self.harbor_close_current_workspace_now();
             return;
         }
-        if confirm && !tab.can_close_without_prompting(CloseReason::Tab) {
-            if self.activate_tab(tab_idx as isize).is_err() {
-                return;
-            }
-
-            let window = self.window.clone().unwrap();
-            let (overlay, future) = start_overlay(self, &tab, move |tab_id, term| {
-                confirm_close_tab(tab_id, term, mux_window_id, window)
-            });
-            self.assign_overlay(tab_id, overlay);
-            promise::spawn::spawn(future).detach();
-        } else {
-            mux.remove_tab(tab_id);
-        }
+        mux.remove_tab(tab_id);
     }
 
-    fn close_current_tab(&mut self, confirm: bool) {
+    fn close_current_tab(&mut self, _confirm: bool) {
         let mux = Mux::get();
         let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
             Some(tab) => tab,
             None => return,
         };
         if self.harbor_workspace_has_single_tab() {
-            self.close_current_workspace(tab, confirm);
+            self.harbor_close_current_workspace_now();
             return;
         }
-        let tab_id = tab.tab_id();
-        let mux_window_id = self.mux_window_id;
-        if confirm && !tab.can_close_without_prompting(CloseReason::Tab) {
-            let window = self.window.clone().unwrap();
-            let (overlay, future) = start_overlay(self, &tab, move |tab_id, term| {
-                confirm_close_tab(tab_id, term, mux_window_id, window)
-            });
-            self.assign_overlay(tab_id, overlay);
-            promise::spawn::spawn(future).detach();
-        } else {
-            mux.remove_tab(tab_id);
-        }
+        mux.remove_tab(tab.tab_id());
     }
 
     fn harbor_workspace_has_single_tab(&self) -> bool {
         let mux = Mux::get();
-        let workspace = front_end().active_workspace();
+        let Some(workspace) = mux
+            .get_window(self.mux_window_id)
+            .map(|window| window.get_workspace().to_string())
+        else {
+            return false;
+        };
         let tab_count: usize = mux
             .iter_windows_in_workspace(&workspace)
             .into_iter()
@@ -3426,23 +3414,14 @@ impl TermWindow {
         tab_count == 1
     }
 
-    fn close_current_workspace(&mut self, tab: Arc<Tab>, confirm: bool) {
-        let tab_id = tab.tab_id();
-        if confirm && !tab.can_close_without_prompting(CloseReason::Tab) {
-            let window = self.window.clone().unwrap();
-            let (overlay, future) = start_overlay(self, &tab, move |tab_id, term| {
-                confirm_close_workspace(tab_id, term, window)
-            });
-            self.assign_overlay(tab_id, overlay);
-            promise::spawn::spawn(future).detach();
-        } else {
-            self.harbor_close_current_workspace_now();
-        }
-    }
-
     pub(crate) fn harbor_close_current_workspace_now(&mut self) {
         let mux = Mux::get();
-        let workspace = front_end().active_workspace();
+        let Some(workspace) = mux
+            .get_window(self.mux_window_id)
+            .map(|window| window.get_workspace().to_string())
+        else {
+            return;
+        };
         let tab_id = mux
             .get_active_tab_for_window(self.mux_window_id)
             .map(|tab| tab.tab_id());
@@ -3456,6 +3435,9 @@ impl TermWindow {
             mux.remove_tab(tab_id);
         }
         self.invalidate_harbor_sidebar();
+        if let Some(window) = self.window.as_ref() {
+            window.invalidate();
+        }
     }
 
     pub fn pane_state(&self, pane_id: PaneId) -> RefMut<'_, PaneState> {

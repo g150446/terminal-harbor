@@ -514,6 +514,10 @@ impl crate::TermWindow {
             name: Some(workspace.mux_workspace),
             spawn: Some(config::keyassignment::SpawnCommand {
                 cwd,
+                // The old workspace's final pane may disappear while this
+                // asynchronous spawn is starting. The Harbor session domain
+                // remains available independently of that pane.
+                domain: config::keyassignment::SpawnTabDomain::DefaultDomain,
                 ..Default::default()
             }),
         };
