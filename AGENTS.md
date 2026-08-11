@@ -151,6 +151,24 @@ name the documents updated in the same change and what they now say. A report
 that lists only code and tests leaves the reader unable to tell whether this
 section was applied or silently skipped.
 
+## Branch Strategy
+
+`main` is the canonical integration branch for Terminal Harbor and tracks
+`origin/main` in the `g150446/terminal-harbor` fork. The original WezTerm
+repository is configured as `upstream`; treat `upstream/main` as an external
+source branch, and do not develop on it or replace Terminal Harbor's `main`
+with it.
+
+Integrate upstream WezTerm changes on a temporary branch such as
+`sync/wezterm-YYYYMMDD`. Start it from Terminal Harbor's `main`, merge
+`upstream/main` into it, resolve conflicts, and complete the Harbor build and
+behavior checks there before merging the result into `main`.
+
+Feature and agent-specific branches are temporary. Completed work must be
+integrated into `main`; their existence does not make them the canonical
+product branch. Parallel agents may use separate branches or worktrees, so do
+not require every task to edit `main` directly.
+
 ## Commit & Pull Request Guidelines
 
 Recent commits use short imperative subjects such as `Relay the foreground
