@@ -6,6 +6,34 @@
 
 ---
 
+## 2026-08-10 20:56 — 新規ワークスペースをホームから開始
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `1e9e0cae85`（ブランチ `sidebar-agent-activity`、`wezterm-gui/src/termwindow/harbor_sidebar.rs`・`wezterm-gui/src/commands.rs`・`docs/config/lua/keyassignment/CreateWorkspace.md`・本配置記録に未コミット変更あり） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-10 20:29 |
+| `wezterm-gui` | `328cd98c947bbee8615f26a8f0b37b123f62f7c42f8718f651131f0e355af87d` |
+| `wezterm` | `962a0278603959b407d77e4b80293429e6fb839820e7f55c1ae210b6a553dd9b` |
+| `wezterm-mux-server` | `272f5ab0ea543a91bff014d6f90695e09d27118cb803a35e5cda2702930ff2f8` |
+| `strip-ansi-escapes` | `bc5c0b5ac092522a99c108e705c4f490fa3cb67d2f0cc95e1467be75a3bb83a6` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-10 20:56 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260810-2031.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)、GUI PID `23708` → `60119`、mux PID `23715` を維持 |
+
+⌘Nの`CreateWorkspace`はアクティブペインのCWDではなくユーザーのホームをrootと初期CWDに
+使うよう変更した。ホームを解決できない、または存在しない場合は相対パスへフォールバック
+せず作成を中止する。新規タブは従来どおりCWD未指定でmuxへ渡し、アクティブペインのCWDを
+継承する経路を維持した。コマンド説明とLuaアクション文書も新しい挙動に合わせた。
+
+対象3クレートのcheck、GUI subcommand 2件、再起動CLI 4件、再起動制御4件、Harbor 47件
+（新規回帰テスト2件を含む）、release build、`git diff --check`、配置前後の署名・ハッシュ・
+CLI helpに合格した。nightly rustfmtの全体checkは今回未変更の`harbor_mobile.rs`にある既存
+整形差分だけを報告した。保持再起動後にGUI PIDが変わり、mux PIDとペインID `0` / `1` /
+`2`、TTY `/dev/ttys000` / `/dev/ttys001` / `/dev/ttys002`が存続した。⌘Nの自動実機操作は
+macOSが`osascript`のキー送信をアクセシビリティ権限で拒否したため未実施。
+
 ## 2026-08-09 22:14 — セッションホストの初期ウィンドウ生成を停止
 
 | 項目 | 値 |

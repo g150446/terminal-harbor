@@ -1629,8 +1629,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         },
         CreateWorkspace => CommandDef {
             brief: "New Workspace".into(),
-            doc: "Creates and selects a workspace rooted at the active pane's working directory"
-                .into(),
+            doc: "Creates and selects a workspace rooted at the user's home directory".into(),
             keys: vec![(Modifiers::SUPER, "n".into())],
             args: &[ArgType::ActivePane],
             menubar: &["Window", "Workspace"],

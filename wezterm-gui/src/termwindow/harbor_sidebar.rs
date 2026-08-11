@@ -3,11 +3,18 @@ use crate::termwindow::UIItemType;
 use crate::utilsprites::RenderMetrics;
 use crate::{harbor_mobile, harbor_workspace};
 use config::{Dimension, DimensionContext};
-use mux::pane::CachePolicy;
 use mux::Mux;
 use std::path::PathBuf;
 use termwiz::cell::unicode_column_width;
 use window::color::LinearRgba;
+
+fn new_workspace_directory(home: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    let home = home.ok_or_else(|| anyhow::anyhow!("unable to resolve the user home directory"))?;
+    if !home.is_dir() {
+        anyhow::bail!("the user home directory does not exist: {}", home.display());
+    }
+    Ok(home)
+}
 
 /// Soft-wrap `text` so each visual line fits roughly `max_cols` cells.
 /// Existing newlines are preserved; long tokens are hard-broken.
@@ -475,11 +482,7 @@ impl crate::TermWindow {
         let pane = self
             .get_active_pane_or_overlay()
             .ok_or_else(|| anyhow::anyhow!("no active pane"))?;
-        let root = pane
-            .get_current_working_dir(CachePolicy::AllowStale)
-            .and_then(|url| url.to_file_path().ok())
-            .or_else(dirs_next::home_dir)
-            .unwrap_or_else(|| PathBuf::from("."));
+        let root = new_workspace_directory(dirs_next::home_dir())?;
         let workspace = harbor_workspace::create_from_path(root.clone());
         let action = config::keyassignment::KeyAssignment::SwitchToWorkspace {
             name: Some(workspace.mux_workspace),
@@ -529,7 +532,28 @@ impl crate::TermWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{truncate_line, unicode_column_width, workspace_detail, wrap_sidebar_lines};
+    use super::{
+        new_workspace_directory, truncate_line, unicode_column_width, workspace_detail,
+        wrap_sidebar_lines,
+    };
+
+    #[test]
+    fn new_workspace_starts_in_the_home_directory() {
+        let home = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            new_workspace_directory(Some(home.path().to_path_buf())).unwrap(),
+            home.path()
+        );
+    }
+
+    #[test]
+    fn new_workspace_requires_an_available_home_directory() {
+        assert!(new_workspace_directory(None).is_err());
+        let home = tempfile::tempdir().unwrap();
+        let missing = home.path().join("missing");
+        assert!(new_workspace_directory(Some(missing)).is_err());
+    }
 
     #[test]
     fn wraps_long_uri_without_spaces() {
@@ -552,7 +576,10 @@ mod tests {
         assert_eq!(workspace_detail(None, None, 40), None);
         // A summary without an agent must not produce an orphan line.
         assert_eq!(workspace_detail(None, Some("Running tests"), 40), None);
-        assert_eq!(workspace_detail(Some("   "), Some("Running tests"), 40), None);
+        assert_eq!(
+            workspace_detail(Some("   "), Some("Running tests"), 40),
+            None
+        );
     }
 
     #[test]
