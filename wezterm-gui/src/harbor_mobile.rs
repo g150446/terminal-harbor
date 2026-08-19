@@ -155,6 +155,40 @@ fn endpoint(kind: &'static str, url: String) -> Endpoint {
     Endpoint { kind, url }
 }
 
+fn is_tailscale_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 100 && (64..=127).contains(&octets[1])
+}
+
+#[cfg(unix)]
+fn local_tailscale_ipv4() -> Option<std::net::Ipv4Addr> {
+    let mut addresses = std::ptr::null_mut();
+    if unsafe { libc::getifaddrs(&mut addresses) } != 0 {
+        return None;
+    }
+    let mut current = addresses;
+    let mut result = None;
+    while !current.is_null() {
+        let address = unsafe { (*current).ifa_addr };
+        if !address.is_null() && unsafe { (*address).sa_family as i32 } == libc::AF_INET {
+            let socket_address = unsafe { &*(address as *const libc::sockaddr_in) };
+            let ip = std::net::Ipv4Addr::from(socket_address.sin_addr.s_addr.to_ne_bytes());
+            if is_tailscale_ipv4(ip) {
+                result = Some(ip);
+                break;
+            }
+        }
+        current = unsafe { (*current).ifa_next };
+    }
+    unsafe { libc::freeifaddrs(addresses) };
+    result
+}
+
+#[cfg(not(unix))]
+fn local_tailscale_ipv4() -> Option<std::net::Ipv4Addr> {
+    None
+}
+
 fn tailscale_output(args: &[&str]) -> Option<Vec<u8>> {
     let candidates = [
         "/usr/local/bin/tailscale",
@@ -165,24 +199,41 @@ fn tailscale_output(args: &[&str]) -> Option<Vec<u8>> {
     let mut child = candidates.iter().find_map(|executable| {
         std::process::Command::new(executable)
             .args(args)
+            // A GUI-launched process inherits an application XPC identity.
+            // Tailscale's CLI aborts when it mistakes that identity for its own
+            // GUI launch context, so invoke it with a normal CLI environment.
+            .env_remove("__CFBundleIdentifier")
+            .env_remove("XPC_SERVICE_NAME")
+            .env_remove("XPC_FLAGS")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
             .ok()
     })?;
+    // Drain stdout while the process is running. `tailscale status --json` can
+    // exceed the OS pipe capacity on tailnets with enough peers; waiting for
+    // the child to exit before reading would then deadlock until our timeout.
+    let mut stdout = child.stdout.take()?;
+    let output_reader = thread::spawn(move || {
+        let mut output = Vec::new();
+        stdout.read_to_end(&mut output).ok()?;
+        Some(output)
+    });
     let deadline = Instant::now() + Duration::from_millis(1500);
     loop {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => {
-                let mut output = Vec::new();
-                child.stdout.take()?.read_to_end(&mut output).ok()?;
-                return Some(output);
+                return output_reader.join().ok().flatten();
             }
-            Ok(Some(_)) | Err(_) => return None,
+            Ok(Some(_)) | Err(_) => {
+                let _ = output_reader.join();
+                return None;
+            }
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = output_reader.join();
                 return None;
             }
         }
@@ -242,6 +293,29 @@ fn connection_endpoints(host: &str, port: u16) -> Vec<Endpoint> {
                     }
                 }
             }
+        }
+    }
+    // The full status document can be unavailable or unusually large in a GUI
+    // launch environment. Fall back to the small, purpose-built IP command so
+    // a remote phone still receives a directly reachable Tailscale endpoint.
+    if !endpoints
+        .iter()
+        .any(|endpoint| endpoint.kind == "tailscale_direct")
+    {
+        if let Some(ip) = local_tailscale_ipv4() {
+            endpoints.push(endpoint(
+                "tailscale_direct",
+                format!("http://{ip}:{port}"),
+            ));
+        } else if let Some(ip) = tailscale_output(&["ip", "-4"])
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .map(|text| text.trim().to_string())
+            .filter(|text| text.parse::<std::net::Ipv4Addr>().is_ok())
+        {
+            endpoints.push(endpoint(
+                "tailscale_direct",
+                format!("http://{ip}:{port}"),
+            ));
         }
     }
     endpoints.push(endpoint("lan", format!("http://{host}:{port}")));
@@ -1890,6 +1964,14 @@ mod tests {
     fn session_names_are_non_empty() {
         assert!(!device_name().is_empty());
         assert!(!host_name().is_empty());
+    }
+
+    #[test]
+    fn tailscale_ipv4_uses_the_cgnat_range() {
+        assert!(is_tailscale_ipv4("100.64.0.1".parse().unwrap()));
+        assert!(is_tailscale_ipv4("100.127.255.254".parse().unwrap()));
+        assert!(!is_tailscale_ipv4("100.63.255.255".parse().unwrap()));
+        assert!(!is_tailscale_ipv4("10.0.0.1".parse().unwrap()));
     }
 
     #[test]
