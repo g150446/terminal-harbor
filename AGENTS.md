@@ -17,6 +17,8 @@ Harbor-specific code lives in:
 | `wezterm-gui/src/harbor_workspace.rs` | Workspace registry, persistence, directory resolution, agent and activity aggregation |
 | `wezterm-gui/src/termwindow/harbor_sidebar.rs` | Sidebar row rendering, formatting, colors |
 | `wezterm-gui/src/harbor_mobile.rs` | HTTP bridge on port 7780 for the companion app |
+| `wezterm-gui/src/harbor_peer.rs` | HMAC client that talks to another Harbor over that bridge |
+| `wezterm-gui/src/overlay/harbor_remote.rs` | Screen overlay for a remote workspace |
 | `wezterm-gui/src/harbor_restart.rs`, `wezterm/src/harbor_restart.rs` | Restart request handling, compatibility checks, restart helper |
 | `wezterm-gui/src/harbor_settings.rs` | Harbor settings persistence |
 | `wezterm-mux-server-impl/src/sessionhandler.rs` | Per-pane push loop; relays pane state and user vars to attached clients |
@@ -134,10 +136,11 @@ changes to:
 - User-visible behavior, constraints, and compatibility requirements.
 
 `docs/harbor-sidebar.md` owns the sidebar row contract,
-`docs/mobile-bridge.md` the HTTP bridge, `docs/restarting.md` the user-facing
-restart rules, `docs/maintenance.md` the runbook, and `docs/release-log.md` the
-deployment history. `docs/changelog.md` is upstream WezTerm's; do not put
-Harbor notes there.
+`docs/mobile-bridge.md` the HTTP bridge, `docs/harbor-peers.md` Harbor-to-Harbor
+pairing over that bridge, `docs/restarting.md` the user-facing restart rules,
+`docs/maintenance.md` the runbook, and `docs/release-log.md` the deployment
+history. `docs/changelog.md` is upstream WezTerm's; do not put Harbor notes
+there.
 
 If no suitable document exists and future maintainers need context, add a
 focused Markdown file under `docs/` that explains the reason for the change,

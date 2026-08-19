@@ -146,7 +146,8 @@ bridgeは`wezterm-gui`内で`0.0.0.0:7780`をlistenし、
 macOSの永続状態は通常
 `~/Library/Application Support/terminal-harbor/mobile-devices.json`にあります。
 ここにはstable `server_id`、client ID、長期secretが含まれるため、秘密情報として
-扱います。内容、バックアップ、QR、pair URIをログ、issue、スクリーンショット、
+扱います。Harbor同士のペアは同じディレクトリの`paired-desktops.json`に保存します。
+内容、バックアップ、QR、pair URIをログ、issue、スクリーンショット、
 コミットへ含めないでください。状態ファイルの削除や再生成はserver identityを変え、
 既存クライアントの再pairingが必要になるため、通常の障害対応では行いません。
 

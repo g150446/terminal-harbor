@@ -41,6 +41,7 @@ mod download;
 mod frontend;
 mod glyphcache;
 mod harbor_mobile;
+mod harbor_peer;
 mod harbor_restart;
 mod harbor_settings;
 mod harbor_workspace;

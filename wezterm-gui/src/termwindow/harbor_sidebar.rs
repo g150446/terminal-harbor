@@ -1,7 +1,7 @@
 use crate::termwindow::box_model::*;
 use crate::termwindow::UIItemType;
 use crate::utilsprites::RenderMetrics;
-use crate::{harbor_mobile, harbor_workspace};
+use crate::{harbor_mobile, harbor_peer, harbor_workspace};
 use config::{Dimension, DimensionContext};
 use mux::Mux;
 use std::path::PathBuf;
@@ -243,7 +243,7 @@ impl crate::TermWindow {
             text: muted.into(),
         };
         children.push(
-            wrapped_text_element(&font, pair_label, max_cols, pair_colors)
+            wrapped_text_element(&font, pair_label, max_cols, pair_colors.clone())
                 .item_type(UIItemType::HarborPairMobile)
                 .line_height(Some(1.55))
                 .padding(BoxDimension {
@@ -366,6 +366,188 @@ impl crate::TermWindow {
                         bg: LinearRgba(0.035, 0.09, 0.12, 0.96).into(),
                         text: teal.into(),
                     })),
+            );
+        }
+
+        children.push(
+            wrapped_text_element(
+                &font,
+                "🖥  Pair another Harbor",
+                max_cols,
+                pair_colors.clone(),
+            )
+            .item_type(UIItemType::HarborPairPeer)
+            .line_height(Some(1.55))
+            .padding(BoxDimension {
+                left: Dimension::Pixels(16.),
+                right: Dimension::Pixels(12.),
+                top: Dimension::Pixels(2.),
+                bottom: Dimension::Pixels(6.),
+            })
+            .min_width(Some(Dimension::Pixels(content_width)))
+            .max_width(Some(Dimension::Pixels(content_width)))
+            .hover_colors(Some(ElementColors {
+                border: BorderColor::default(),
+                bg: LinearRgba(0.035, 0.09, 0.12, 0.96).into(),
+                text: teal.into(),
+            })),
+        );
+        if let Some(status) = harbor_peer::pair_status() {
+            children.push(
+                wrapped_text_element(
+                    &font,
+                    &status,
+                    max_cols,
+                    ElementColors {
+                        border: BorderColor::default(),
+                        bg: navy.into(),
+                        text: muted.into(),
+                    },
+                )
+                .line_height(Some(1.2))
+                .padding(BoxDimension {
+                    left: Dimension::Pixels(16.),
+                    right: Dimension::Pixels(12.),
+                    top: Dimension::Pixels(2.),
+                    bottom: Dimension::Pixels(6.),
+                })
+                .min_width(Some(Dimension::Pixels(content_width)))
+                .max_width(Some(Dimension::Pixels(content_width))),
+            );
+        }
+
+        for peer in harbor_peer::snapshot() {
+            children.push(
+                wrapped_text_element(
+                    &font,
+                    &format!(
+                        "▸  {}",
+                        truncate_line(&peer.label, max_cols.saturating_sub(3))
+                    ),
+                    max_cols,
+                    ElementColors {
+                        border: BorderColor::default(),
+                        bg: navy.into(),
+                        text: teal.into(),
+                    },
+                )
+                .line_height(Some(1.35))
+                .padding(BoxDimension {
+                    left: Dimension::Pixels(16.),
+                    right: Dimension::Pixels(12.),
+                    top: Dimension::Pixels(8.),
+                    bottom: Dimension::Pixels(2.),
+                })
+                .min_width(Some(Dimension::Pixels(content_width)))
+                .max_width(Some(Dimension::Pixels(content_width))),
+            );
+            if let Some(error) = peer.error.as_deref().filter(|value| !value.is_empty()) {
+                children.push(
+                    wrapped_text_element(
+                        &font,
+                        error,
+                        max_cols,
+                        ElementColors {
+                            border: BorderColor::default(),
+                            bg: navy.into(),
+                            text: muted.into(),
+                        },
+                    )
+                    .line_height(Some(1.2))
+                    .padding(BoxDimension {
+                        left: Dimension::Pixels(16.),
+                        right: Dimension::Pixels(12.),
+                        top: Dimension::Pixels(2.),
+                        bottom: Dimension::Pixels(2.),
+                    })
+                    .min_width(Some(Dimension::Pixels(content_width)))
+                    .max_width(Some(Dimension::Pixels(content_width))),
+                );
+            }
+            if peer.needs_lan_confirm {
+                children.push(
+                    wrapped_text_element(
+                        &font,
+                        "Use local network",
+                        max_cols,
+                        ElementColors {
+                            border: BorderColor::default(),
+                            bg: navy.into(),
+                            text: teal.into(),
+                        },
+                    )
+                    .item_type(UIItemType::HarborConfirmLan(peer.server_id.clone()))
+                    .line_height(Some(1.35))
+                    .padding(BoxDimension {
+                        left: Dimension::Pixels(16.),
+                        right: Dimension::Pixels(12.),
+                        top: Dimension::Pixels(2.),
+                        bottom: Dimension::Pixels(4.),
+                    })
+                    .min_width(Some(Dimension::Pixels(content_width)))
+                    .max_width(Some(Dimension::Pixels(content_width)))
+                    .hover_colors(Some(ElementColors {
+                        border: BorderColor::default(),
+                        bg: LinearRgba(0.035, 0.09, 0.12, 0.96).into(),
+                        text: teal.into(),
+                    })),
+                );
+            }
+            for remote in peer.workspaces {
+                let (colors, hover) = Self::sidebar_colors(remote.selected);
+                children.push(
+                    wrapped_text_element(
+                        &font,
+                        &format!(
+                            "{}  {}",
+                            remote.activity.glyph(),
+                            truncate_line(&remote.directory, max_cols.saturating_sub(3))
+                        ),
+                        max_cols,
+                        colors,
+                    )
+                    .item_type(UIItemType::HarborRemoteWorkspace {
+                        server_id: peer.server_id.clone(),
+                        workspace_id: remote.id,
+                    })
+                    .line_height(Some(1.25))
+                    .padding(BoxDimension {
+                        left: Dimension::Pixels(24.),
+                        right: Dimension::Pixels(12.),
+                        top: Dimension::Pixels(5.),
+                        bottom: Dimension::Pixels(5.),
+                    })
+                    .min_width(Some(Dimension::Pixels(content_width)))
+                    .max_width(Some(Dimension::Pixels(content_width)))
+                    .hover_colors(hover),
+                );
+            }
+            children.push(
+                wrapped_text_element(
+                    &font,
+                    "Unpair",
+                    max_cols,
+                    ElementColors {
+                        border: BorderColor::default(),
+                        bg: navy.into(),
+                        text: muted.into(),
+                    },
+                )
+                .item_type(UIItemType::HarborUnpairPeer(peer.server_id.clone()))
+                .line_height(Some(1.3))
+                .padding(BoxDimension {
+                    left: Dimension::Pixels(16.),
+                    right: Dimension::Pixels(12.),
+                    top: Dimension::Pixels(2.),
+                    bottom: Dimension::Pixels(8.),
+                })
+                .min_width(Some(Dimension::Pixels(content_width)))
+                .max_width(Some(Dimension::Pixels(content_width)))
+                .hover_colors(Some(ElementColors {
+                    border: BorderColor::default(),
+                    bg: LinearRgba(0.035, 0.09, 0.12, 0.96).into(),
+                    text: teal.into(),
+                })),
             );
         }
 
@@ -527,6 +709,39 @@ impl crate::TermWindow {
         self.invalidate_harbor_sidebar();
         self.perform_key_assignment(&pane, &action)?;
         Ok(())
+    }
+
+    pub fn harbor_open_remote_workspace(&mut self, server_id: String, workspace_id: String) {
+        let mux = Mux::get();
+        let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+            Some(tab) => tab,
+            None => return,
+        };
+        let host_label = crate::harbor_peer::peer_label(&server_id);
+        let (overlay, future) = crate::overlay::start_overlay(self, &tab, move |_tab_id, term| {
+            crate::overlay::harbor_remote::show(term, server_id, workspace_id, host_label)
+        });
+        self.assign_overlay(tab.tab_id(), overlay);
+        promise::spawn::spawn(future).detach();
+    }
+
+    pub fn harbor_pair_peer_from_clipboard(&mut self, context: &dyn window::WindowOps) {
+        let future = context.get_clipboard(window::Clipboard::Clipboard);
+        promise::spawn::spawn(async move {
+            match future.await {
+                Ok(text) => {
+                    promise::spawn::spawn_into_new_thread(move || {
+                        if let Err(err) = crate::harbor_peer::pair_from_uri(&text) {
+                            log::error!("pairing another Harbor: {err:#}");
+                        }
+                        Ok::<(), anyhow::Error>(())
+                    })
+                    .detach();
+                }
+                Err(err) => log::error!("reading pair URI from clipboard: {err:#}"),
+            }
+        })
+        .detach();
     }
 }
 

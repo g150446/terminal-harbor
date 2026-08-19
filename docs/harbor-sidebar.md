@@ -227,13 +227,17 @@ When troubleshooting a stale label:
 | File | Responsibility |
 |---|---|
 | `wezterm-gui/src/harbor_workspace.rs` | Directory resolution, fallback order, agent/activity aggregation, `KNOWN_AGENTS`, title normalization, and `HarborWorkspaceRow` |
-| `wezterm-gui/src/termwindow/harbor_sidebar.rs` | Detail-line formatting, truncation, wrapping, colors, and row rendering |
+| `wezterm-gui/src/termwindow/harbor_sidebar.rs` | Detail-line formatting, truncation, wrapping, colors, row rendering, and remote peer rows |
+| `wezterm-gui/src/harbor_peer.rs` | HMAC client, clipboard pairing, and `paired-desktops.json` |
+| `wezterm-gui/src/overlay/harbor_remote.rs` | Remote screen overlay and allowlisted key forwarding |
 | `wezterm-gui/src/termwindow/mod.rs` | Mux notification handling, `harbor_pane_titles`, and sidebar cache invalidation |
 | `README.md` | User-facing display behavior |
 
-The mobile workspace API continues to expose the persisted `root`; the
-sidebar-only `directory` field is not part of the JSON API or persistence
-schema. Changes to this display therefore require no data migration.
+The persisted registry still stores `root`. API version 1.4.0 adds an additive
+`directory` basename on each workspace record so a desktop peer can label
+remote rows without a full path. Local sidebar rows still compute that
+basename from the live pane; they do not persist `directory`. No data
+migration is required.
 
 ## Verification
 
@@ -266,6 +270,15 @@ checked against it:
   leaves every other row visible in order, including after a workspace-restoring session restart;
 - long and non-ASCII summaries truncate to one row so row heights stay even,
   and no full path is exposed.
+
+## Remote Harbor peers
+
+A paired Mac appears as a host heading under **Pair another Harbor**. Its
+workspace rows use the same activity glyph and directory basename as local
+rows. They must not run `SwitchToWorkspace` locally: a click opens the remote
+screen overlay and sends input over the mobile bridge. Full remote paths stay
+off the sidebar. Pair URIs, tokens, and secrets stay out of the sidebar, logs,
+and commits. See [`harbor-peers.md`](harbor-peers.md).
 
 Unit tests should continue covering basename extraction (including `/` and
 non-ASCII paths), `KNOWN_AGENTS` matching, spinner stripping, uninformative

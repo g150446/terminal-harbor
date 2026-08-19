@@ -6,6 +6,46 @@
 
 ---
 
+## 2026-08-19 16:17 — 修飾なし Tab キー（API 1.5.0）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `2903ab5976`（ブランチ `main`、GUI・OpenAPI・ドキュメントに未コミット変更あり） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-19 16:17 |
+| `wezterm-gui` | `5337fa50641b003a78f153120a79a77b59441b0224d02ad1a8cc5d3ef8202043` |
+| `wezterm` | `ff4f3d784f1c18794dbc5a5e735a364693f076ea44fcbecd7165083d37710768` |
+| `wezterm-mux-server` | `5ce0bb9e57b74f5591f0f35679bac738e4990fc7057ca0d455a72c1ff48eab70` |
+| `strip-ansi-escapes` | `bc5c0b5ac092522a99c108e705c4f490fa3cb67d2f0cc95e1467be75a3bb83a6` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-19 16:17 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260819-1617.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)、GUI PID `76906` → `86948`。mux は未変更のため `--full` 不要 |
+
+モバイル橋の `/key` に修飾なし `tab` を追加した（API 1.5.0）。Mac 同士オーバーレイは物理 Tab を同じ名前で送る。Android は SPC と ⇧⇥ の間に Tab ボタンを置く。
+
+Harbor 50件、`flutter analyze` と `flutter test` 39件、release build、配置前後の署名検証と `wezterm restart --help` に合格した。保持再起動後に GUI PID が変わり、identity は `1.5.0`、bridge は `*:7780` で listen している。arm64 デバッグ APK は Tailscale ADB `100.102.210.64:5555` へ `pm install -r`（`versionCode` 4016、`lastUpdateTime` 2026-08-19 16:45:02）。
+
+## 2026-08-19 09:53 — Space/Shift+Tab と Harbor 同士のワークスペース連携
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `2903ab5976`（ブランチ `main`、GUI・OpenAPI・ドキュメントに未コミット変更あり） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-19 09:51 |
+| `wezterm-gui` | `d81dd7c6f1d8ddeeadc0387902a2601b70274280fb9453995ad6f7455d0af401` |
+| `wezterm` | `b321a45efe0fbf48de04e8e776aea4e3e69b18c0cb1599938ec8272df3d38fd5` |
+| `wezterm-mux-server` | `417c3c21cf33193179ed8988021b478a84d21d7a80ec494297b14639bcd3d11e` |
+| `strip-ansi-escapes` | `e5ba85a11a22b10e02a4cf49e98e9ae7218ee2647a1e4b592ac61abdcc5a6f0d` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-19 09:53 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260819-0953.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)、GUI PID `65503` → `76906`。mux は未変更のため `--full` 不要 |
+
+モバイル橋の `/key` に `space` と `shift-tab` を追加し、Workspace JSON にディレクトリ basename `directory` を足した（API 1.4.0）。デスクトップは同じ HMAC 契約のクライアントになり、クリップボードの pair URI から別 Mac をペアできる。経路は Tailscale HTTPS → Tailscale 直接 →（確認後）LAN。リモート行はローカル `SwitchToWorkspace` せず、画面ミラーオーバーレイと instruction/key 送信で操作する。
+
+対象3クレートのcheck、Harbor 50件（新規ピア経路テスト3件とキー許可リスト拡張を含む）、release build、`git diff --check`、配置前後の署名検証と `wezterm restart --help` に合格した。保持再起動後に GUI PID が変わり、bridge は `*:7780` で listen している。
+
 ## 2026-08-10 20:56 — 新規ワークスペースをホームから開始
 
 | 項目 | 値 |

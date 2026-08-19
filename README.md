@@ -129,12 +129,24 @@ Terminal Harbor can be controlled from the companion Flutter app
    network, or paste the URI into the app's **Manual** entry. The URI encodes a
    short-lived `harbor://pair?...` token; the app exchanges it for a device token.
 4. From the phone: create and close workspaces, create/switch/close their tabs,
-   mirror the active pane’s screen (last 60 lines, refreshed every second), and send
-   instruction text to the workspace’s active pane — Send also delivers a real
-   Enter key event so shells and AI agents execute the line.
+   mirror the active pane’s screen (plain text, refreshed every second), send
+   instruction text — Send also delivers a real Enter key event — and send
+   allowlisted keys (Up, Down, ESC, ^C, Space, Tab, Shift+Tab).
 
 The bridge speaks a small JSON HTTP API (not the WezTerm binary mux protocol).
 See `openapi/harbor-mobile.yaml` in the mobile repository for the contract.
+
+## Pairing another Mac
+
+The same bridge can be used from another Terminal Harbor window.
+
+1. On the host Mac, click **Pair mobile** so the pair URI is on the clipboard.
+2. On the client Mac, click **Pair another Harbor**. It reads the clipboard and
+   tries Tailscale, then LAN after confirmation.
+3. Remote workspaces appear under that Mac's name. Clicking one opens a screen
+   overlay and sends input to the host.
+
+Details are in [`docs/harbor-peers.md`](docs/harbor-peers.md).
 
 ## Upstream foundation
 

@@ -599,6 +599,7 @@ pub fn try_new() -> Result<Rc<GuiFrontEnd>, Error> {
         .replace(config_subscription);
 
     crate::harbor_mobile::ensure_running();
+    crate::harbor_peer::ensure_running();
 
     Ok(front_end)
 }

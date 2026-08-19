@@ -10,6 +10,7 @@ pub mod confirm;
 pub mod confirm_close_pane;
 pub mod copy;
 pub mod debug;
+pub mod harbor_remote;
 pub mod launcher;
 pub mod prompt;
 pub mod quickselect;

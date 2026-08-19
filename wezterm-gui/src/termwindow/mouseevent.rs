@@ -44,7 +44,11 @@ impl super::TermWindow {
             | UIItemType::HarborPairMobile
             | UIItemType::HarborRefreshPair
             | UIItemType::HarborOpenPairQr
-            | UIItemType::HarborCopyPairUri => {}
+            | UIItemType::HarborCopyPairUri
+            | UIItemType::HarborPairPeer
+            | UIItemType::HarborConfirmLan(_)
+            | UIItemType::HarborUnpairPeer(_)
+            | UIItemType::HarborRemoteWorkspace { .. } => {}
             UIItemType::CloseTab(_)
             | UIItemType::AboveScrollThumb
             | UIItemType::BelowScrollThumb
@@ -61,7 +65,11 @@ impl super::TermWindow {
             | UIItemType::HarborPairMobile
             | UIItemType::HarborRefreshPair
             | UIItemType::HarborOpenPairQr
-            | UIItemType::HarborCopyPairUri => {}
+            | UIItemType::HarborCopyPairUri
+            | UIItemType::HarborPairPeer
+            | UIItemType::HarborConfirmLan(_)
+            | UIItemType::HarborUnpairPeer(_)
+            | UIItemType::HarborRemoteWorkspace { .. } => {}
             UIItemType::CloseTab(_)
             | UIItemType::AboveScrollThumb
             | UIItemType::BelowScrollThumb
@@ -433,6 +441,35 @@ impl super::TermWindow {
                     if let Some(uri) = crate::harbor_mobile::current_pair_uri() {
                         context.set_clipboard(window::Clipboard::Clipboard, uri);
                     }
+                }
+                context.set_cursor(Some(MouseCursor::Arrow));
+            }
+            UIItemType::HarborPairPeer => {
+                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
+                    self.harbor_pair_peer_from_clipboard(context);
+                }
+                context.set_cursor(Some(MouseCursor::Arrow));
+            }
+            UIItemType::HarborConfirmLan(server_id) => {
+                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
+                    crate::harbor_peer::confirm_lan_fallback(&server_id);
+                    self.invalidate_harbor_sidebar();
+                }
+                context.set_cursor(Some(MouseCursor::Arrow));
+            }
+            UIItemType::HarborUnpairPeer(server_id) => {
+                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
+                    crate::harbor_peer::unpair(&server_id);
+                    self.invalidate_harbor_sidebar();
+                }
+                context.set_cursor(Some(MouseCursor::Arrow));
+            }
+            UIItemType::HarborRemoteWorkspace {
+                server_id,
+                workspace_id,
+            } => {
+                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
+                    self.harbor_open_remote_workspace(server_id, workspace_id);
                 }
                 context.set_cursor(Some(MouseCursor::Arrow));
             }

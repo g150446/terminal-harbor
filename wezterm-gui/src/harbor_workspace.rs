@@ -61,6 +61,17 @@ pub enum WorkspaceActivity {
 }
 
 impl WorkspaceActivity {
+    pub fn from_wire(value: &str) -> Self {
+        match value {
+            "error" => Self::Error,
+            "waiting" => Self::Waiting,
+            "running" => Self::Running,
+            "unread" => Self::Unread,
+            "done" => Self::Done,
+            _ => Self::Idle,
+        }
+    }
+
     pub fn glyph(self) -> &'static str {
         match self {
             Self::Error => "!",

@@ -161,6 +161,13 @@ pub enum UIItemType {
     HarborRefreshPair,
     HarborOpenPairQr,
     HarborCopyPairUri,
+    HarborPairPeer,
+    HarborConfirmLan(String),
+    HarborUnpairPeer(String),
+    HarborRemoteWorkspace {
+        server_id: String,
+        workspace_id: String,
+    },
     CloseTab(usize),
     AboveScrollThumb,
     ScrollThumb,

@@ -96,7 +96,7 @@ Full contract: `openapi/harbor-mobile.yaml` in the mobile repo.
 | DELETE | `/v1/workspaces/{id}/tabs/{tabId}` | Confirmed close of a non-final tab and all panes |
 | POST | `/v1/workspaces/{id}/activate` | Switch active workspace |
 | POST | `/v1/workspaces/{id}/instruction` | Body `{text, submit=true}` |
-| POST | `/v1/workspaces/{id}/key` | Send an allowlisted `up` or `down` terminal key |
+| POST | `/v1/workspaces/{id}/key` | Send an allowlisted terminal key (`up`, `down`, `escape`, `ctrl-c`, `space`, `tab`, `shift-tab`) |
 | GET | `/v1/workspaces/{id}/screen?lines=N` | Plain-text screen mirror, N=1..20000, default 60 |
 | GET | `/v1/workspaces/{id}/speech/hints` | Up to 96 contextual terms for one-shot Android speech recognition |
 
@@ -163,6 +163,16 @@ conversation or file contents. Hidden/generated directories, IP addresses,
 pairing data, hashes, and secret-shaped values are excluded. Mux capture stays
 on the GUI thread; the bounded filesystem walk runs after `run_on_main`
 returns. Do not add the returned hints to production logs.
+
+API version 1.4.0 adds `space` and `shift-tab` to `/key`, and an additive
+`directory` basename on each workspace record so a desktop peer can label
+remote rows without showing a full path. The same HMAC JSON contract is also
+used by another Terminal Harbor instance: see
+[`harbor-peers.md`](harbor-peers.md). Do not use the WezTerm mux protocol for
+that pairing.
+
+API version 1.5.0 adds unmodified `tab` to `/key` (`KeyCode::Tab` with no
+modifiers). The Mac-to-Mac overlay forwards a physical Tab the same way.
 
 ### Screen endpoint implementation
 
@@ -237,7 +247,9 @@ then `window.set_window_position(ScreenPoint)` is applied post-creation.
 | File | Role |
 |---|---|
 | `wezterm-gui/src/harbor_mobile.rs` | Bridge server, token persistence, identity metadata, endpoints, and QR PNG |
-| `wezterm-gui/src/termwindow/harbor_sidebar.rs` | Pairing panel UI (buttons: Open QR / Copy URI / New QR) |
+| `wezterm-gui/src/harbor_peer.rs` | HMAC client used by another Harbor to call this bridge |
+| `wezterm-gui/src/overlay/harbor_remote.rs` | Remote workspace overlay (screen poll, instruction, allowlisted keys) |
+| `wezterm-gui/src/termwindow/harbor_sidebar.rs` | Pairing panel UI (buttons: Open QR / Copy URI / New QR / Pair another Harbor) |
 | `wezterm-gui/src/termwindow/mouseevent.rs` | `UIItemType` handlers; toggle-on also opens QR + copies URI |
 | `wezterm-gui/src/termwindow/mod.rs` | `UIItemType` variants; window centering in `new_window` |
 | `wezterm-gui/src/frontend.rs` | `harbor_mobile::ensure_running()` at startup; `first_window()` helper |

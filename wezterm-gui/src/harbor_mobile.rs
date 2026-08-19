@@ -31,8 +31,8 @@ use window::WindowOps;
 
 pub const DEFAULT_PORT: u16 = 7780;
 const PAIR_TOKEN_TTL: Duration = Duration::from_secs(5 * 60);
-const API_VERSION: &str = "1.3.0";
-const AUTH_VERSION: &str = "hmac-sha256-v1";
+const API_VERSION: &str = "1.5.0";
+pub(crate) const AUTH_VERSION: &str = "hmac-sha256-v1";
 const AUTH_CLOCK_SKEW_SECS: u64 = 5 * 60;
 const REPLAY_TTL_SECS: u64 = 10 * 60;
 
@@ -116,7 +116,7 @@ lazy_static::lazy_static! {
 
 static SERVER_STARTED: AtomicBool = AtomicBool::new(false);
 
-fn state_dir() -> PathBuf {
+pub(crate) fn state_dir() -> PathBuf {
     dirs_next::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("terminal-harbor")
@@ -455,14 +455,14 @@ enum RequestAuth {
     },
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
 
-fn canonical_request(
+pub(crate) fn canonical_request(
     method: &str,
     path: &str,
     timestamp: &str,
@@ -479,7 +479,7 @@ fn canonical_request(
     )
 }
 
-fn hmac_value(key: &[u8], value: &[u8]) -> String {
+pub(crate) fn hmac_value(key: &[u8], value: &[u8]) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key size");
     mac.update(value);
     URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
@@ -712,7 +712,7 @@ fn host_name() -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn device_name() -> String {
+pub(crate) fn device_name() -> String {
     std::process::Command::new("/usr/sbin/scutil")
         .args(["--get", "ComputerName"])
         .output()
@@ -725,7 +725,7 @@ fn device_name() -> String {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn device_name() -> String {
+pub(crate) fn device_name() -> String {
     host_name()
 }
 
@@ -1028,7 +1028,12 @@ fn dispatch(
     finish(404, json_error("not found"))
 }
 
-fn derive_device_key(pair_token: &str, server_id: &str, client_id: &str, nonce: &[u8]) -> Vec<u8> {
+pub(crate) fn derive_device_key(
+    pair_token: &str,
+    server_id: &str,
+    client_id: &str,
+    nonce: &[u8],
+) -> Vec<u8> {
     let hk = Hkdf::<Sha256>::new(Some(server_id.as_bytes()), pair_token.as_bytes());
     let mut info = b"terminal-harbor/device/v2\0".to_vec();
     info.extend_from_slice(client_id.as_bytes());
@@ -1181,6 +1186,7 @@ fn list_workspaces_json() -> anyhow::Result<String> {
             serde_json::json!({
                 "id": row.workspace.id,
                 "name": row.workspace.name,
+                "directory": row.directory,
                 "root": row.workspace.root.as_ref().map(|p| p.display().to_string()),
                 "mux_workspace": row.workspace.mux_workspace,
                 "activity": activity_str(row.activity),
@@ -1455,6 +1461,9 @@ fn terminal_key_code(key: &str) -> Option<(KeyCode, KeyModifiers)> {
         // Send the letter with CTRL held rather than a pre-encoded 0x03 so the
         // terminal derives the right sequence under CSI-u/Kitty keyboards too.
         "ctrl-c" => Some((KeyCode::Char('c'), KeyModifiers::CTRL)),
+        "space" => Some((KeyCode::Char(' '), KeyModifiers::NONE)),
+        "tab" => Some((KeyCode::Tab, KeyModifiers::NONE)),
+        "shift-tab" => Some((KeyCode::Tab, KeyModifiers::SHIFT)),
         _ => None,
     }
 }
@@ -1949,6 +1958,18 @@ mod tests {
         assert!(matches!(
             terminal_key_code("ctrl-c"),
             Some((KeyCode::Char('c'), KeyModifiers::CTRL))
+        ));
+        assert!(matches!(
+            terminal_key_code("space"),
+            Some((KeyCode::Char(' '), KeyModifiers::NONE))
+        ));
+        assert!(matches!(
+            terminal_key_code("tab"),
+            Some((KeyCode::Tab, KeyModifiers::NONE))
+        ));
+        assert!(matches!(
+            terminal_key_code("shift-tab"),
+            Some((KeyCode::Tab, KeyModifiers::SHIFT))
         ));
         assert!(terminal_key_code("enter").is_none());
         assert!(terminal_key_code("ctrl-d").is_none());
