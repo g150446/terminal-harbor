@@ -252,14 +252,24 @@ fn handle_control_stream(mut stream: std::os::unix::net::UnixStream) -> anyhow::
 }
 
 #[cfg(unix)]
+fn ensure_control_socket_parent(path: &std::path::Path) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .context("Terminal Harbor control socket has no parent directory")?;
+    std::fs::create_dir_all(parent).context("create Terminal Harbor runtime directory")?;
+    Ok(())
+}
+
+#[cfg(unix)]
 pub fn start_control_server(window_class: &str) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
 
+    let path = harbor_control_socket_path(window_class);
+    ensure_control_socket_parent(&path)?;
     if CONTROL_SERVER_STARTED.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
-    let path = harbor_control_socket_path(window_class);
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -295,6 +305,18 @@ pub fn start_control_server(_window_class: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn first_launch_creates_the_control_socket_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("missing").join("runtime");
+        let path = parent.join("control.sock");
+
+        ensure_control_socket_parent(&path).unwrap();
+
+        assert!(parent.is_dir());
+    }
 
     #[test]
     fn parses_preserving_restart_request() {

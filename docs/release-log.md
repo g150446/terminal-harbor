@@ -6,6 +6,52 @@
 
 ---
 
+## 2026-08-23 18:48 — 初回起動時のランタイムディレクトリ作成
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `7f6e10fcc1`（ブランチ `main`、`harbor_restart.rs`・`maintenance.md`・本配置記録に未コミット変更あり） |
+| toolchain | rustc 1.98.0 (88d9e12ae 2026-08-18) / cargo 1.98.0 |
+| ビルド日時 | 2026-08-23 18:47 |
+| `wezterm-gui` | `40cfe0d8d1f327693387ed959818f8789b7222087df5c7735cfaf3b8509b2a8a` |
+| `wezterm` | `77b3a7b50a294eb3edba8a5ac7e081bc7fc6488d734a08d7ea50630caecdd5d8` |
+| `wezterm-mux-server` | `bdd796a0ee07d46ab4c3ee148aa3a9aca5b8559de3a3700a4b7d3324cf8ea1fc` |
+| `strip-ansi-escapes` | `39dadfef0ee79c883267e9ceb60bd7f3f91dcf5f3d9b2cec180a377bbecba8ad` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-23 18:48 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260823-184737.app` |
+| 必要な再起動方式 | GUIのみの変更なので保持再起動 (`wezterm restart`)。今回は起動不能な初回配置の差し替え後に通常起動した |
+
+初回配置では`~/.local/share/wezterm`が存在せず、GUIが制御ソケットのbindに
+`No such file or directory`で失敗して終了していた。制御サーバー開始前に親ディレクトリを
+作成するよう修正し、初回起動の回帰テストを追加した。再起動制御5件、変更ファイルの
+nightly rustfmt、release build、`git diff --check`、配置前後の署名・ハッシュ・CLI helpに
+合格した。配置後はGUI PID `27406`、mux PID `27419`が稼働し、制御ソケットはmode `0600`、
+bridgeは`*:7780`でlistenし、`wezterm cli list`で初期ペインを確認した。
+
+## 2026-08-23 16:57 — mainのクリーンビルド配置
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `7f6e10fcc1`（ブランチ `main`、配置時点でclean） |
+| toolchain | rustc 1.98.0 (88d9e12ae 2026-08-18) / cargo 1.98.0 |
+| ビルド日時 | 2026-08-23 16:57 |
+| `wezterm-gui` | `efdba071a79a30108495923393fda635c702034fdcc80fcfc4892ac338b2caf8` |
+| `wezterm` | `77b3a7b50a294eb3edba8a5ac7e081bc7fc6488d734a08d7ea50630caecdd5d8` |
+| `wezterm-mux-server` | `bdd796a0ee07d46ab4c3ee148aa3a9aca5b8559de3a3700a4b7d3324cf8ea1fc` |
+| `strip-ansi-escapes` | `39dadfef0ee79c883267e9ceb60bd7f3f91dcf5f3d9b2cec180a377bbecba8ad` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-23 16:57 |
+| 旧バンドル退避先 | なし（配置前に `/Applications/Terminal Harbor.app` は存在しなかった） |
+| 必要な再起動方式 | 初回配置のため再起動不要。起動時から新しいGUIとmuxサーバーを使用する |
+
+対象3クレートのcheck、GUI subcommand 2件、再起動CLI 4件、再起動制御4件、
+Harbor 51件、release build、`git diff --check`、配置前後の署名・ハッシュ・CLI helpに
+合格した。nightly rustfmtの全体checkは、今回未変更の`harbor_mobile.rs`にある既存の
+import順と改行の整形差分だけを報告した。ビルド前にRustが未導入だったためHomebrewの
+rustupとstable/nightlyツールチェーンを導入し、容量確保のため再生成可能なdev profileの
+成果物を`cargo clean --profile dev`で削除した。
+
 ## 2026-08-19 16:17 — 修飾なし Tab キー（API 1.5.0）
 
 | 項目 | 値 |
