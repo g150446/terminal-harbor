@@ -601,6 +601,15 @@ impl TextStyle {
         // Add symbols that many people end up using via patched fonts
         font.push(FontAttributes::new_fallback("Symbols Nerd Font Mono"));
 
+        // CoreText can select a Korean fallback for Japanese punctuation,
+        // which gives 、 and 。 the wrong glyph placement for Japanese text.
+        // Prefer the system Japanese font before falling back to CoreText's
+        // dynamically discovered candidates.
+        #[cfg(target_os = "macos")]
+        if !font.iter().any(|f| f.family == "Hiragino Sans") {
+            font.push(FontAttributes::new_fallback("Hiragino Sans"));
+        }
+
         font
     }
 }
@@ -719,5 +728,52 @@ mod test {
             let style = style.reduce_first_font_to_family();
             assert_eq!(style.font[0].family, "Inconsolata");
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_adds_japanese_font_after_existing_implicit_fallbacks() {
+        let fonts = TextStyle::default().font_with_fallback();
+        let families = fonts
+            .iter()
+            .map(|font| font.family.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            families,
+            vec![
+                "JetBrains Mono",
+                "Noto Color Emoji",
+                "Symbols Nerd Font Mono",
+                "Hiragino Sans",
+            ]
+        );
+        assert!(fonts.last().expect("Hiragino fallback").is_fallback);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_does_not_duplicate_explicit_japanese_font() {
+        let style = TextStyle {
+            font: vec![
+                FontAttributes::new("Example Mono"),
+                FontAttributes::new_fallback("Hiragino Sans"),
+            ],
+            foreground: None,
+        };
+        let fonts = style.font_with_fallback();
+        let families = fonts
+            .iter()
+            .map(|font| font.family.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(families[0..2], ["Example Mono", "Hiragino Sans"]);
+        assert_eq!(
+            families
+                .iter()
+                .filter(|family| **family == "Hiragino Sans")
+                .count(),
+            1
+        );
     }
 }

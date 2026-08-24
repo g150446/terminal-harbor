@@ -104,6 +104,11 @@ return {
 }
 ```
 
+On macOS, Terminal Harbor implicitly adds `Hiragino Sans` after the configured
+and bundled fallback fonts. This keeps Japanese text, including `、` and `。`,
+in a Japanese system font instead of allowing CoreText to select a CJK font
+for another locale. An explicitly configured fallback still takes precedence.
+
 See also [Troubleshooting Fonts](config/fonts.md#troubleshooting-fonts).
 
 ### Some (but not all) Emoji don't render properly

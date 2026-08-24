@@ -6,6 +6,30 @@
 
 ---
 
+## 2026-08-24 16:25 — macOSの日本語フォールバック修正
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `c83b756be`（ブランチ `main`、`config/src/font.rs`・`docs/faq.md`・本配置記録に未コミット変更あり） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-24 16:22 |
+| `wezterm-gui` | `b41a209b0dc5e7c4e2660b94b39f6177f07f75a812630653b3c1d343d9a614ff` |
+| `wezterm` | `ce56ef0ded3f3d1a164a90354c256365fefc295f39e8fba02f8a725619642af5` |
+| `wezterm-mux-server` | `f319cda3bbf47bfe77dbce811203e694f08f89bdb7953e2970dd6e91782e2d18` |
+| `strip-ansi-escapes` | `e5ba85a11a22b10e02a4cf49e98e9ae7218ee2647a1e4b592ac61abdcc5a6f0d` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-24 16:25 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260824-162423.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)、GUI PID `32193` → `50919`。mux PID `45605` を維持 |
+
+macOSの暗黙フォールバック末尾に`Hiragino Sans`を追加し、CoreTextが日本語を
+韓国語向け`.Apple SD Gothic NeoI`へ解決していた問題を修正した。設定クレート10件、
+GUI subcommand 2件、再起動CLI 4件、再起動制御5件、Harbor 59件、3クレートcheck、
+release build、`git diff --check`、配置前後の署名検証に合格した。インストール済み
+`wezterm ls-fonts`で「日本語の句読点。、読」の全字が`Hiragino Sans`に解決され、
+欠落glyphがないことを確認した。全体nightly fmt checkは今回未変更の4ファイルにある
+既存のimport順だけを報告したため、それらは変更していない。
+
 ## 2026-08-24 15:13 — main最新（ランタイムディレクトリ修正＋Cursor/API 1.6.0）の配置
 
 | 項目 | 値 |
