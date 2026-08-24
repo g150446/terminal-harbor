@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-08-24 15:13 — main最新（ランタイムディレクトリ修正＋Cursor/API 1.6.0）の配置
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `78b2d61fc`（ブランチ `main`、clean） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-24 14:56 |
+| `wezterm-gui` | `58e5265339ea65219a76d196c88a2fbbb93727bddf27906ec860caad33964a1c` |
+| `wezterm` | `0102a89265e9ab60a8bcb9f1ca9adc5ca43dae92a612d2d92b1c6d0dc2dfb925` |
+| `wezterm-mux-server` | `dc16c0de5946fffb24be021946fc3ded265442c4420a88e1f15c4ff70556d87c` |
+| `strip-ansi-escapes` | `e5ba85a11a22b10e02a4cf49e98e9ae7218ee2647a1e4b592ac61abdcc5a6f0d` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-24 15:13 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260824-151342.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)、GUI PID `45601` → `32193`。mux PID `45605` を維持。mux のプロセス検出は 2026-08-19 配置で既に入っており、今回の差分は GUI 側のランタイムディレクトリ作成修正が中心 |
+
+この Mac の `/Applications` が 2026-08-19 ビルドのままだったため、origin に入っていた初回起動時のランタイムディレクトリ作成修正（PR #1）と、コミット済みの Cursor CLI 検出・モバイル API 1.6.0 を含む `main` 最新を release ビルドして差し替えた。pre-build gate（3 クレート check、harbor_tests 2、re起動 CLI/制御、Harbor 59、mux-server-impl 6、`git diff --check`）、release build、配置前後の署名検証と `wezterm restart --help` に合格した。保持再起動後に GUI PID が変わり、mux PID と既存ペインが存続し、identity は `1.6.0`、bridge は `*:7780` で listen している。
+
 ## 2026-08-23 18:48 — 初回起動時のランタイムディレクトリ作成
 
 | 項目 | 値 |
