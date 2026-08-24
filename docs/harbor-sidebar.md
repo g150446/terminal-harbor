@@ -34,8 +34,9 @@ The creation-time workspace name (`HarborWorkspace.name`) is deliberately **not
 shown**. It is captured once by `create_from_path()` and never follows `cd` or
 tab switches, so displaying it alongside the live directory showed the same
 folder twice with one copy permanently stale. The field is still persisted and
-still used by `unique_name()`, the launcher palette
-(`overlay/launcher.rs`), and the mobile JSON API.
+still used by `unique_name()` and the launcher palette (`overlay/launcher.rs`).
+The mobile list API still includes `name` for older clients, but the companion
+app paints the same directory-first row as this sidebar.
 
 These rules avoid leaking long local paths into the sidebar and keep the
 workspace location visible independently of agent status.
@@ -51,8 +52,10 @@ Agent name, in order:
    `wezterm workspace status --agent <name>` protocol accepts any agent name,
    so this path is not restricted to the known list.
 2. The foreground process name via `pane_process_name()`, but only when
-   `agent_label()` matches `KNOWN_AGENTS` (`claude`, `codex`, `opencode`).
-   Add new agents there.
+   `agent_label()` matches `KNOWN_AGENTS` (`claude`, `codex`, `opencode`,
+   `agent`, `cursor-agent`). Add new agents there. Cursor CLI is invoked as
+   `agent` or `cursor-agent`; both map to the label `Cursor`. The editor CLI
+   `cursor` is not an agent session and stays unrecognized.
 3. Otherwise no agent is running and the row stays at one line.
 
 ### Why the process name comes from `argv[0]`
@@ -90,8 +93,19 @@ limited by `PROC_INFO_CACHE_TTL`. `ClientPane` stores incoming
 `Alert::SetUserVar` into its user vars, so `pane_process_name()` in
 `harbor_workspace.rs` reads it back as a fallback.
 
+The tty foreground group (`tcgetpgrp`) is the first source. When that lookup
+fails, or when it names only a runtime such as `node`, the mux walks the
+shell's process tree for `AGENT_PROCESS_NAMES` (`claude`, `codex`, `opencode`,
+`agent`, `cursor-agent`). Cursor CLI is a `node` image invoked as `agent`, and
+its MCP helpers share the same process group, so the leader alone is not
+enough. `ClientPane::new` also requests one render push at attach: background
+workspaces are never painted, so without that request the var would stay empty
+until the user focused the row.
+
 The constant is duplicated in both crates and pinned by the
 `pane_process_user_var_matches_the_mux_server` test — keep them equal.
+`AGENT_PROCESS_NAMES` is pinned against `KNOWN_AGENTS` by
+`agent_process_names_match_known_agents`.
 
 Note the asymmetry when shipping changes: GUI-only work reaches users through a
 session-preserving `wezterm restart`, but anything in this path changes the mux
@@ -235,9 +249,10 @@ When troubleshooting a stale label:
 
 The persisted registry still stores `root`. API version 1.4.0 adds an additive
 `directory` basename on each workspace record so a desktop peer can label
-remote rows without a full path. Local sidebar rows still compute that
-basename from the live pane; they do not persist `directory`. No data
-migration is required.
+remote rows without a full path. API version 1.6.0 also emits `agent` and
+`summary` so the mobile workspace list can use this same row contract. Local
+sidebar rows still compute those values from the live pane; they do not persist
+`directory`, `agent`, or `summary`. No data migration is required.
 
 ## Verification
 
@@ -257,6 +272,8 @@ checked against it:
   `zsh`-style process name;
 - Claude: `Claude` on line 2 and its current task on line 3, with no visible
   relayout while only the spinner advances;
+- Cursor CLI (`agent` or `cursor-agent`): `Cursor` on line 2 and the pane
+  title on line 3 when it is not just the process name;
 - opencode: `OpenCode` on line 2 and no line 3, since it titles itself;
 - `wezterm workspace status --agent codex --message "Running tests"` still wins
   over the pane title;

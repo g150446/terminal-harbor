@@ -1,6 +1,6 @@
 use crate::domain::ClientInner;
 use crate::pane::mousestate::MouseState;
-use crate::pane::renderable::{hydrate_lines, RenderableInner, RenderableState};
+use crate::pane::renderable::{RenderableInner, RenderableState, hydrate_lines};
 use anyhow::bail;
 use async_trait::async_trait;
 use codec::*;
@@ -8,8 +8,8 @@ use config::configuration;
 use config::keyassignment::ScrollbackEraseMode;
 use mux::domain::DomainId;
 use mux::pane::{
-    alloc_pane_id, CachePolicy, CloseReason, ForEachPaneLogicalLine, LogicalLine, Pane, PaneId,
-    Pattern, SearchResult, WithPaneLines,
+    CachePolicy, CloseReason, ForEachPaneLogicalLine, LogicalLine, Pane, PaneId, Pattern,
+    SearchResult, WithPaneLines, alloc_pane_id,
 };
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
 use mux::tab::TabId;
@@ -107,6 +107,23 @@ impl ClientPane {
                     .set_configured_palette_for_pane(SetPalette {
                         pane_id: remote_pane_id,
                         palette,
+                    })
+                    .await
+            }
+        })
+        .detach();
+
+        // The render poll that carries `TH_PANE_PROCESS` only runs for panes
+        // that are being painted. Background Harbor workspaces never are, so
+        // ask once at attach or the sidebar omits a running agent until the
+        // user focuses that workspace.
+        promise::spawn::spawn({
+            let client = Arc::clone(client);
+            async move {
+                client
+                    .client
+                    .get_pane_render_changes(GetPaneRenderChanges {
+                        pane_id: remote_pane_id,
                     })
                     .await
             }

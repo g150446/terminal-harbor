@@ -52,6 +52,66 @@ import順と改行の整形差分だけを報告した。ビルド前にRustが�
 rustupとstable/nightlyツールチェーンを導入し、容量確保のため再生成可能なdev profileの
 成果物を`cargo clean --profile dev`で削除した。
 
+## 2026-08-19 20:32 — 非フォーカス／Cursor CLI のエージェント検出を修正
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `7f6e10fc`（ブランチ `main`、GUI・mux・ドキュメントに未コミット変更あり） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-19 20:32 |
+| `wezterm-gui` | `4619dc405ad0e60915a64662585da88960b469580bcbce8c25f9ab88595f3c60` |
+| `wezterm` | `437977e46bab5b7ab1bb276fb40e9abb9d89bb789a068f648d26293fb496fe59` |
+| `wezterm-mux-server` | `3ece47a7a9c1d634bcd18d5acf8393eac09047fb0886b66d0df7febfdc6af8b5` |
+| `strip-ansi-escapes` | `bc5c0b5ac092522a99c108e705c4f490fa3cb67d2f0cc95e1467be75a3bb83a6` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-19 20:32 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260819-2032.app` |
+| 必要な再起動方式 | セッション再起動 (`wezterm restart --full`)。mux のプロセス検出を変えたため保持再起動では届かない |
+
+選択中ワークスペースで Cursor CLI がサイドバーに出ない件。tty のフォアグラウンド名が取れないとき、シェル配下のプロセス木から `agent` / `cursor-agent` を拾う。GUI はアタッチ時に全ペインへ一度 push を要求し、背面ワークスペースにも `TH_PANE_PROCESS` が届くようにした。モバイル一覧は同じ `agent` を描くので APK は不要。
+
+Harbor 58件、mux-server-impl のプロセス検出テスト、release build、配置前後の署名検証と `wezterm restart --help` に合格した。
+
+## 2026-08-19 20:10 — Cursor CLI をサイドバーの既知エージェントに追加
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `7f6e10fcc1`（ブランチ `main`、GUI・ドキュメントに未コミット変更あり） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-19 20:10 |
+| `wezterm-gui` | `c95b0a6e17fe034f58bed89d535134e159b01dbd6a20e340acd68600f81b1c0d` |
+| `wezterm` | `b43323a7637b1ab8aca4b52c8d8860e5a382f475a503614f0c61d3b026d03ab3` |
+| `wezterm-mux-server` | `68e2b3aece54c48f510185e54ab4075f1ecee554c3639c9bde81adab729cd058` |
+| `strip-ansi-escapes` | `bc5c0b5ac092522a99c108e705c4f490fa3cb67d2f0cc95e1467be75a3bb83a6` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-19 20:10 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260819-2010.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)、GUI PID `666` → `2333`。mux は未変更のため `--full` 不要 |
+
+`KNOWN_AGENTS` に Cursor CLI の `agent` と `cursor-agent` を追加し、表示名を `Cursor` にした。エディタ CLI の `cursor` は対象外。タイトルがプロセス名だけのときはサマリ行を出さない。モバイル一覧は既存の `agent` / `summary` を描くので APK は不要。
+
+Harbor 57件、release build、配置前後の署名検証と `wezterm restart --help` に合格した。保持再起動後に GUI PID が変わり、identity は `1.6.0`、bridge は `*:7780` で listen している。
+
+## 2026-08-19 19:37 — モバイル一覧をサイドバー契約に、画面ミラーに色（API 1.6.0）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `7f6e10fcc1`（ブランチ `main`、GUI・OpenAPI・ドキュメントに未コミット変更あり） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-08-19 19:37 |
+| `wezterm-gui` | `28fc693e754e6cd7d53c0658f12b9773ac458a2027f06dde2231cab552b08ac2` |
+| `wezterm` | `b43323a7637b1ab8aca4b52c8d8860e5a382f475a503614f0c61d3b026d03ab3` |
+| `wezterm-mux-server` | `68e2b3aece54c48f510185e54ab4075f1ecee554c3639c9bde81adab729cd058` |
+| `strip-ansi-escapes` | `bc5c0b5ac092522a99c108e705c4f490fa3cb67d2f0cc95e1467be75a3bb83a6` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-08-19 19:37 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260819-1937.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)、GUI PID `86948` → `666`。mux は未変更のため `--full` 不要 |
+
+ワークスペース JSON にサイドバーと同じ `agent` / `summary` を足し、画面ミラーにペインパレットから解決した `foreground` / `background` / `runs` を載せた（API 1.6.0）。Android 一覧はグリフ＋ディレクトリ、エージェント時だけ詳細行。ターミナルは `Text.rich` で ANSI 色を描く。
+
+Harbor 57件、`flutter analyze` と `flutter test` 46件、release build、配置前後の署名検証と `wezterm restart --help` に合格した。保持再起動後に GUI PID が変わり、identity は `1.6.0`、bridge は `*:7780` で listen している。arm64 デバッグ APK は Tailscale ADB `100.102.210.64:5555` へ `pm install -r`（`versionCode` 4016、`lastUpdateTime` 2026-08-19 19:51:02）。
+
 ## 2026-08-19 16:17 — 修飾なし Tab キー（API 1.5.0）
 
 | 項目 | 値 |

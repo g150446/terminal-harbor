@@ -9,13 +9,13 @@ use crate::{Domain, Mux, MuxNotification};
 use anyhow::Error;
 use async_trait::async_trait;
 use config::keyassignment::ScrollbackEraseMode;
-use config::{configuration, ExitBehavior, ExitBehaviorMessaging};
+use config::{ExitBehavior, ExitBehaviorMessaging, configuration};
 use fancy_regex::Regex;
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
 use portable_pty::{Child, ChildKiller, ExitStatus, MasterPty, PtySize};
 use procinfo::LocalProcessInfo;
 use rangeset::RangeSet;
-use smol::channel::{bounded, Receiver, TryRecvError};
+use smol::channel::{Receiver, TryRecvError, bounded};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryInto;
@@ -23,7 +23,7 @@ use std::io::{Result as IoResult, Write};
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use termwiz::escape::csi::{Sgr, CSI};
+use termwiz::escape::csi::{CSI, Sgr};
 use termwiz::escape::{Action, DeviceControlMode};
 use termwiz::input::KeyboardEncoding;
 use termwiz::surface::{Line, SequenceNo};
@@ -100,12 +100,17 @@ impl CachedLeaderInfo {
     }
 
     fn update(&mut self) {
-        self.pid = unsafe { libc::tcgetpgrp(self.fd) } as u32;
-        if self.pid > 0 {
+        // `tcgetpgrp` returns -1 on error. Casting that to `u32` would look
+        // like a live pid and then both name lookups fail, so the GUI would
+        // see no foreground process at all.
+        let pgrp = unsafe { libc::tcgetpgrp(self.fd) };
+        if pgrp > 0 {
+            self.pid = pgrp as u32;
             self.path = LocalProcessInfo::executable_path(self.pid);
             self.command_name = LocalProcessInfo::command_name(self.pid);
             self.current_working_dir = LocalProcessInfo::current_working_dir(self.pid);
         } else {
+            self.pid = 0;
             self.path.take();
             self.command_name.take();
             self.current_working_dir.take();
@@ -1047,6 +1052,17 @@ impl LocalPane {
             leader: Arc::new(Mutex::new(None)),
             command_description,
         }
+    }
+
+    /// Process tree rooted at the pane's session child (usually the shell).
+    ///
+    /// The tty foreground group is the usual way to name the program the user
+    /// is talking to, but `tcgetpgrp` is not always available, and a Cursor
+    /// CLI session keeps `node` / MCP helpers in the same group. Harbor walks
+    /// this tree when the leader name is missing or is only a runtime.
+    pub fn session_process_tree(&self, policy: CachePolicy) -> Option<LocalProcessInfo> {
+        self.divine_process_list(policy)
+            .map(|info| info.root.clone())
     }
 
     #[cfg(unix)]

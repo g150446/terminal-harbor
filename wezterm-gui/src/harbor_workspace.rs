@@ -1,6 +1,6 @@
 use anyhow::Context;
-use mux::pane::CachePolicy;
 use mux::Mux;
+use mux::pane::CachePolicy;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -101,9 +101,10 @@ pub struct HarborWorkspaceRow {
     pub activity: WorkspaceActivity,
     pub directory: String,
     /// Display name of the AI agent running in this workspace, if any.
-    /// Sidebar-only, like `directory`: not persisted and not in the mobile API.
+    /// Not persisted. Shown in the sidebar and emitted on the mobile list API.
     pub agent: Option<String>,
-    /// One-line summary of what that agent is working on. Sidebar-only.
+    /// One-line summary of what that agent is working on.
+    /// Not persisted. Shown in the sidebar and emitted on the mobile list API.
     pub summary: Option<String>,
     pub process: Option<String>,
     pub message: Option<String>,
@@ -117,12 +118,26 @@ const KNOWN_AGENTS: &[(&str, &str)] = &[
     ("claude", "Claude"),
     ("codex", "Codex"),
     ("opencode", "OpenCode"),
+    // Cursor CLI: `agent` is the documented command; `cursor-agent` is the
+    // unambiguous alias and the versioned image basename.
+    ("agent", "Cursor"),
+    ("cursor-agent", "Cursor"),
 ];
 
 /// Pane titles that carry no task information; agents and shells both fall
 /// back to these, and `LocalPane::get_title` substitutes the process name for
 /// the default title.
-const UNINFORMATIVE_TITLES: &[&str] = &["wezterm", "zsh", "bash", "fish", "sh", "nu", "pwsh"];
+const UNINFORMATIVE_TITLES: &[&str] = &[
+    "wezterm",
+    "zsh",
+    "bash",
+    "fish",
+    "sh",
+    "nu",
+    "pwsh",
+    "agent",
+    "cursor-agent",
+];
 
 /// Leading decoration that agents put in front of the actual summary. Claude
 /// Code animates a braille spinner here, so it has to come off before the
@@ -897,11 +912,26 @@ mod tests {
     }
 
     #[test]
+    fn agent_process_names_match_known_agents() {
+        // The mux walks the session tree for these names; the GUI maps the
+        // same list to sidebar labels. Changing one copy alone drops agents.
+        assert_eq!(
+            KNOWN_AGENTS.iter().map(|(exe, _)| *exe).collect::<Vec<_>>(),
+            wezterm_mux_server_impl::sessionhandler::AGENT_PROCESS_NAMES.to_vec()
+        );
+    }
+
+    #[test]
     fn agent_label_matches_known_agents_only() {
         assert_eq!(agent_label("claude"), Some("Claude"));
         assert_eq!(agent_label("codex"), Some("Codex"));
         assert_eq!(agent_label("opencode"), Some("OpenCode"));
         assert_eq!(agent_label("Codex.exe"), Some("Codex"));
+        assert_eq!(agent_label("agent"), Some("Cursor"));
+        assert_eq!(agent_label("cursor-agent"), Some("Cursor"));
+        assert_eq!(agent_label("Agent.exe"), Some("Cursor"));
+        // The editor CLI is not an agent session.
+        assert_eq!(agent_label("cursor"), None);
         // Shells and generic runtimes must not count as a running agent.
         assert_eq!(agent_label("zsh"), None);
         assert_eq!(agent_label("node"), None);
@@ -933,9 +963,15 @@ mod tests {
         assert_eq!(summary_from_title("wezterm", "Claude", None), None);
         assert_eq!(summary_from_title("", "Claude", None), None);
         assert_eq!(summary_from_title("claude", "Claude", Some("claude")), None);
+        assert_eq!(summary_from_title("agent", "Cursor", Some("agent")), None);
+        assert_eq!(summary_from_title("cursor-agent", "Cursor", None), None);
         assert_eq!(
             summary_from_title("⠂ Fixing the sidebar", "Claude", Some("claude")),
             Some("Fixing the sidebar".to_string())
+        );
+        assert_eq!(
+            summary_from_title("Debug Option Add", "Cursor", Some("agent")),
+            Some("Debug Option Add".to_string())
         );
     }
 

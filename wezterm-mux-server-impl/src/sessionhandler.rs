@@ -1,9 +1,10 @@
 use crate::PKI;
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use codec::*;
 use config::TermConfig;
 use mux::client::ClientId;
 use mux::domain::SplitSource;
+use mux::localpane::LocalPane;
 use mux::pane::{CachePolicy, Pane, PaneId};
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
 use mux::tab::TabId;
@@ -14,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use termwiz::surface::SequenceNo;
 use url::Url;
-use wezterm_term::terminal::Alert;
 use wezterm_term::StableRowIndex;
+use wezterm_term::terminal::Alert;
 
 #[derive(Clone)]
 pub struct PduSender {
@@ -55,12 +56,54 @@ pub(crate) struct PerPane {
 /// an AI agent, is running in a pane.
 pub const PANE_PROCESS_USER_VAR: &str = "TH_PANE_PROCESS";
 
+/// Basenames that identify an AI agent session.
+///
+/// Must stay aligned with `harbor_workspace::KNOWN_AGENTS`; the GUI maps these
+/// to display labels. Keep them equal — `agent_process_names_match_known_agents`
+/// pins the two lists.
+pub const AGENT_PROCESS_NAMES: &[&str] = &["claude", "codex", "opencode", "agent", "cursor-agent"];
+
 /// The program running in the foreground of `pane`, as a bare name.
+///
+/// The tty leader is preferred when it already names an agent. Otherwise walk
+/// the shell's process tree: `tcgetpgrp` is not always available, and Cursor
+/// CLI often has `node` / MCP helpers in the same group as `agent`.
 fn foreground_process_label(pane: &Arc<dyn Pane>) -> Option<String> {
-    process_label(
+    let leader = process_label(
         pane.get_foreground_process_command_name(CachePolicy::AllowStale),
         pane.get_foreground_process_name(CachePolicy::AllowStale),
-    )
+    );
+    if leader
+        .as_deref()
+        .is_some_and(|name| is_agent_process_name(name))
+    {
+        return leader;
+    }
+    if let Some(local) = pane.downcast_ref::<LocalPane>() {
+        if let Some(tree) = local.session_process_tree(CachePolicy::AllowStale) {
+            if let Some(name) = agent_name_in_process_tree(&tree) {
+                return Some(name);
+            }
+        }
+    }
+    leader
+}
+
+fn is_agent_process_name(raw: &str) -> bool {
+    let name = raw.trim().to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    AGENT_PROCESS_NAMES.iter().any(|known| *known == name)
+}
+
+fn agent_name_in_process_tree(info: &procinfo::LocalProcessInfo) -> Option<String> {
+    let label = process_label(
+        info.argv.first().cloned(),
+        Some(info.executable.to_string_lossy().into_owned()),
+    );
+    if let Some(name) = label.filter(|name| is_agent_process_name(name)) {
+        return Some(name);
+    }
+    info.children.values().find_map(agent_name_in_process_tree)
 }
 
 /// Reduce a foreground process to the name worth showing.
@@ -1022,7 +1065,7 @@ impl SessionHandler {
                                     return Err(anyhow!(
                                         "Failed to retrieve tab with ID {}",
                                         tab_id
-                                    ))
+                                    ));
                                 }
                             };
 
@@ -1225,5 +1268,62 @@ mod tests {
             Some("zsh")
         );
         assert_eq!(process_label(None, None), None);
+    }
+
+    fn test_proc(
+        argv0: &str,
+        exe: &str,
+        children: Vec<procinfo::LocalProcessInfo>,
+    ) -> procinfo::LocalProcessInfo {
+        let children = children
+            .into_iter()
+            .enumerate()
+            .map(|(i, mut child)| {
+                child.pid = i as u32 + 10;
+                (child.pid, child)
+            })
+            .collect();
+        procinfo::LocalProcessInfo {
+            pid: 1,
+            ppid: 0,
+            name: argv0.to_string(),
+            executable: std::path::PathBuf::from(exe),
+            argv: vec![argv0.to_string()],
+            cwd: std::path::PathBuf::new(),
+            status: procinfo::LocalProcessStatus::Run,
+            start_time: 0,
+            children,
+            #[cfg(windows)]
+            console: 0,
+        }
+    }
+
+    #[test]
+    fn tree_walk_finds_cursor_cli_under_a_shell() {
+        // Cursor CLI is a node image invoked as `agent`, with MCP children in
+        // the same session. The tty leader is sometimes missing entirely.
+        let tree = test_proc(
+            "-zsh",
+            "/bin/zsh",
+            vec![test_proc(
+                "/Users/example/.local/bin/agent",
+                "/Users/example/.local/share/cursor-agent/versions/2026.08.11/node",
+                vec![test_proc(
+                    "chrome-devtools-mcp",
+                    "/Users/example/.nvm/versions/node/v24.18.0/bin/node",
+                    vec![],
+                )],
+            )],
+        );
+        assert_eq!(
+            super::agent_name_in_process_tree(&tree).as_deref(),
+            Some("agent")
+        );
+    }
+
+    #[test]
+    fn tree_walk_ignores_a_plain_shell() {
+        let tree = test_proc("-zsh", "/bin/zsh", vec![]);
+        assert_eq!(super::agent_name_in_process_tree(&tree), None);
     }
 }

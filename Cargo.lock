@@ -7289,6 +7289,7 @@ dependencies = [
  "log",
  "mux",
  "portable-pty",
+ "procinfo",
  "promise",
  "rangeset",
  "rcgen",

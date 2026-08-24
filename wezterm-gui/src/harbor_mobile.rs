@@ -2,17 +2,17 @@
 
 use crate::harbor_workspace::{self, WorkspaceActivity};
 use crate::termwindow::TermWindowNotif;
-use anyhow::{Context, anyhow};
-use base64::Engine;
+use anyhow::{anyhow, Context};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use config::keyassignment::SpawnTabDomain;
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
-use mux::Mux;
 use mux::pane::CachePolicy;
+use mux::Mux;
 use parking_lot::Mutex;
-use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,12 +26,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{fs, thread};
 use uuid::Uuid;
 use walkdir::{DirEntry, WalkDir};
-use wezterm_term::{KeyCode, KeyModifiers};
+use wezterm_term::color::{ColorAttribute, ColorPalette, SrgbaTuple};
+use wezterm_term::{Intensity, KeyCode, KeyModifiers, Line};
 use window::WindowOps;
 
 pub const DEFAULT_PORT: u16 = 7780;
 const PAIR_TOKEN_TTL: Duration = Duration::from_secs(5 * 60);
-const API_VERSION: &str = "1.5.0";
+const API_VERSION: &str = "1.6.0";
 pub(crate) const AUTH_VERSION: &str = "hmac-sha256-v1";
 const AUTH_CLOCK_SKEW_SECS: u64 = 5 * 60;
 const REPLAY_TTL_SECS: u64 = 10 * 60;
@@ -303,19 +304,13 @@ fn connection_endpoints(host: &str, port: u16) -> Vec<Endpoint> {
         .any(|endpoint| endpoint.kind == "tailscale_direct")
     {
         if let Some(ip) = local_tailscale_ipv4() {
-            endpoints.push(endpoint(
-                "tailscale_direct",
-                format!("http://{ip}:{port}"),
-            ));
+            endpoints.push(endpoint("tailscale_direct", format!("http://{ip}:{port}")));
         } else if let Some(ip) = tailscale_output(&["ip", "-4"])
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .map(|text| text.trim().to_string())
             .filter(|text| text.parse::<std::net::Ipv4Addr>().is_ok())
         {
-            endpoints.push(endpoint(
-                "tailscale_direct",
-                format!("http://{ip}:{port}"),
-            ));
+            endpoints.push(endpoint("tailscale_direct", format!("http://{ip}:{port}")));
         }
     }
     endpoints.push(endpoint("lan", format!("http://{host}:{port}")));
@@ -773,7 +768,11 @@ fn confirmed_destructive_request(body: &[u8]) -> bool {
 fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
     query.split('&').find_map(|pair| {
         let (k, v) = pair.split_once('=')?;
-        if k == key { Some(v) } else { None }
+        if k == key {
+            Some(v)
+        } else {
+            None
+        }
     })
 }
 
@@ -1266,6 +1265,8 @@ fn list_workspaces_json() -> anyhow::Result<String> {
                 "activity": activity_str(row.activity),
                 "process": row.process,
                 "message": row.message,
+                "agent": row.agent,
+                "summary": row.summary,
                 "selected": row.selected,
             })
         })
@@ -1298,14 +1299,24 @@ fn create_workspace(requested_root: Option<String>) -> anyhow::Result<String> {
 
     let workspace = harbor_workspace::create_from_path(root);
     activate_workspace(&workspace.id.to_string())?;
+    let directory = workspace
+        .root
+        .as_ref()
+        .and_then(|root| root.file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or(&workspace.name)
+        .to_string();
     Ok(serde_json::json!({
         "id": workspace.id,
         "name": workspace.name,
+        "directory": directory,
         "root": workspace.root.as_ref().map(|path| path.display().to_string()),
         "mux_workspace": workspace.mux_workspace,
         "activity": "idle",
         "process": null,
         "message": null,
+        "agent": null,
+        "summary": null,
         "selected": true,
     })
     .to_string())
@@ -1808,6 +1819,151 @@ fn join_pane_rows(rows: &[String]) -> String {
     rows[start..end].join("\n")
 }
 
+/// One run of resolved cell color covering `n` Unicode scalars of `text`.
+/// `fg`/`bg` are omitted when they match the pane's default palette colors.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ColorRun {
+    n: usize,
+    fg: Option<String>,
+    bg: Option<String>,
+}
+
+fn srgba_to_hex(color: SrgbaTuple) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        (color.0 * 255.0).round() as u8,
+        (color.1 * 255.0).round() as u8,
+        (color.2 * 255.0).round() as u8
+    )
+}
+
+fn hex_if_not_default(color: SrgbaTuple, default: SrgbaTuple) -> Option<String> {
+    if color == default {
+        None
+    } else {
+        Some(srgba_to_hex(color))
+    }
+}
+
+/// Resolve a cell the way the Mac renderer does for color: bold ANSI 0–7
+/// become the bright indices 8–15, then reverse swaps the resolved pair.
+fn resolve_cell_colors(
+    attrs: &wezterm_term::CellAttributes,
+    palette: &ColorPalette,
+) -> (SrgbaTuple, SrgbaTuple) {
+    let mut fg_attr = attrs.foreground();
+    if let ColorAttribute::PaletteIndex(idx) = fg_attr {
+        if idx < 8 && attrs.intensity() == Intensity::Bold {
+            fg_attr = ColorAttribute::PaletteIndex(idx + 8);
+        }
+    }
+    let mut fg = palette.resolve_fg(fg_attr);
+    let mut bg = palette.resolve_bg(attrs.background());
+    if attrs.reverse() {
+        std::mem::swap(&mut fg, &mut bg);
+    }
+    (fg, bg)
+}
+
+fn push_or_merge_run(runs: &mut Vec<ColorRun>, run: ColorRun) {
+    if run.n == 0 {
+        return;
+    }
+    if let Some(last) = runs.last_mut() {
+        if last.fg == run.fg && last.bg == run.bg {
+            last.n += run.n;
+            return;
+        }
+    }
+    runs.push(run);
+}
+
+fn trim_end_styled(text: &mut String, runs: &mut Vec<ColorRun>) {
+    let trimmed_chars = text.trim_end().chars().count();
+    let mut leftover = text.chars().count().saturating_sub(trimmed_chars);
+    while leftover > 0 {
+        let Some(last) = runs.last_mut() else {
+            break;
+        };
+        if last.n <= leftover {
+            leftover -= last.n;
+            runs.pop();
+        } else {
+            last.n -= leftover;
+            leftover = 0;
+        }
+    }
+    *text = text.trim_end().to_string();
+}
+
+fn styled_row_from_line(line: &Line, palette: &ColorPalette) -> (String, Vec<ColorRun>) {
+    let default_fg = palette.foreground;
+    let default_bg = palette.background;
+    let mut text = String::new();
+    let mut runs = Vec::new();
+    for cell in line.visible_cells() {
+        let grapheme = cell.str();
+        if grapheme.is_empty() {
+            continue;
+        }
+        let (fg, bg) = resolve_cell_colors(cell.attrs(), palette);
+        push_or_merge_run(
+            &mut runs,
+            ColorRun {
+                n: grapheme.chars().count(),
+                fg: hex_if_not_default(fg, default_fg),
+                bg: hex_if_not_default(bg, default_bg),
+            },
+        );
+        text.push_str(grapheme);
+    }
+    trim_end_styled(&mut text, &mut runs);
+    (text, runs)
+}
+
+fn join_styled_rows(rows: &[(String, Vec<ColorRun>)]) -> (String, Vec<ColorRun>) {
+    let start = rows.iter().position(|(text, _)| !text.is_empty());
+    let Some(start) = start else {
+        return (String::new(), Vec::new());
+    };
+    let end = rows
+        .iter()
+        .rposition(|(text, _)| !text.is_empty())
+        .map_or(start, |last| last + 1);
+    let mut text = String::new();
+    let mut runs = Vec::new();
+    for (index, (row_text, row_runs)) in rows[start..end].iter().enumerate() {
+        if index > 0 {
+            text.push('\n');
+            push_or_merge_run(
+                &mut runs,
+                ColorRun {
+                    n: 1,
+                    fg: None,
+                    bg: None,
+                },
+            );
+        }
+        text.push_str(row_text);
+        for run in row_runs {
+            push_or_merge_run(&mut runs, run.clone());
+        }
+    }
+    (text, runs)
+}
+
+fn color_run_json(run: &ColorRun) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    map.insert("n".to_string(), serde_json::json!(run.n));
+    if let Some(fg) = &run.fg {
+        map.insert("fg".to_string(), serde_json::json!(fg));
+    }
+    if let Some(bg) = &run.bg {
+        map.insert("bg".to_string(), serde_json::json!(bg));
+    }
+    serde_json::Value::Object(map)
+}
+
 fn pane_text(pane: &std::sync::Arc<dyn mux::pane::Pane>, nlines: usize) -> String {
     let dims = pane.get_dimensions();
     let bottom_row = dims.physical_top + dims.viewport_rows as isize;
@@ -1821,18 +1977,44 @@ fn pane_text(pane: &std::sync::Arc<dyn mux::pane::Pane>, nlines: usize) -> Strin
     join_pane_rows(&rows)
 }
 
+fn pane_mirror(
+    pane: &std::sync::Arc<dyn mux::pane::Pane>,
+    nlines: usize,
+) -> (String, Vec<ColorRun>, String, String) {
+    let palette = pane.palette();
+    let dims = pane.get_dimensions();
+    let bottom_row = dims.physical_top + dims.viewport_rows as isize;
+    let top_row = bottom_row.saturating_sub(nlines as isize);
+    let (_first_row, lines) = pane.get_lines(top_row..bottom_row);
+    let rows: Vec<(String, Vec<ColorRun>)> = lines
+        .iter()
+        .map(|line| styled_row_from_line(line, &palette))
+        .collect();
+    let (text, runs) = join_styled_rows(&rows);
+    (
+        text,
+        runs,
+        srgba_to_hex(palette.foreground),
+        srgba_to_hex(palette.background),
+    )
+}
+
 /// Render the last `nlines` lines of the workspace's active pane as plain
-/// text so the mobile app can mirror the terminal screen.
+/// text plus palette-resolved color runs so the mobile app can mirror the
+/// terminal screen.
 fn screen_text(id: &str, nlines: usize) -> anyhow::Result<String> {
     let workspace = find_workspace(id)?;
     let pane = workspace_active_pane(&workspace)?;
 
-    let text = pane_text(&pane, nlines);
+    let (text, runs, foreground, background) = pane_mirror(&pane, nlines);
 
     Ok(serde_json::json!({
         "text": text,
         "lines": nlines,
         "alt_screen": pane.is_alt_screen_active(),
+        "foreground": foreground,
+        "background": background,
+        "runs": runs.iter().map(color_run_json).collect::<Vec<_>>(),
     })
     .to_string())
 }
@@ -2021,6 +2203,110 @@ mod tests {
         let blank: Vec<String> = vec![String::new(); 4];
         assert_eq!(join_pane_rows(&blank), "");
         assert_eq!(join_pane_rows(&[]), "");
+    }
+
+    fn default_line(text: &str) -> Line {
+        Line::from_text(text, &wezterm_term::CellAttributes::default(), 0, None)
+    }
+
+    #[test]
+    fn styled_row_omits_default_palette_colors() {
+        let palette = ColorPalette::default();
+        let (text, runs) = styled_row_from_line(&default_line("hello"), &palette);
+        assert_eq!(text, "hello");
+        assert_eq!(
+            runs,
+            vec![ColorRun {
+                n: 5,
+                fg: None,
+                bg: None
+            }]
+        );
+    }
+
+    #[test]
+    fn styled_row_merges_adjacent_cells_and_emits_non_default_fg() {
+        let palette = ColorPalette::default();
+        let expected = srgba_to_hex(palette.resolve_fg(ColorAttribute::PaletteIndex(2)));
+        let mut line = default_line("ok later");
+        {
+            let cells = line.cells_mut();
+            cells[0]
+                .attrs_mut()
+                .set_foreground(wezterm_term::color::AnsiColor::Green);
+            cells[1]
+                .attrs_mut()
+                .set_foreground(wezterm_term::color::AnsiColor::Green);
+        }
+        let (text, runs) = styled_row_from_line(&line, &palette);
+        assert_eq!(text, "ok later");
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].n, 2);
+        assert_eq!(runs[0].fg.as_deref(), Some(expected.as_str()));
+        assert_eq!(runs[1].n, 6);
+        assert_eq!(runs[1].fg, None);
+    }
+
+    #[test]
+    fn styled_row_bold_ansi_green_uses_the_bright_index() {
+        let palette = ColorPalette::default();
+        let expected = srgba_to_hex(palette.resolve_fg(ColorAttribute::PaletteIndex(10)));
+        let mut attrs = wezterm_term::CellAttributes::default();
+        attrs.set_foreground(wezterm_term::color::AnsiColor::Green);
+        attrs.set_intensity(Intensity::Bold);
+        let line = Line::from_text("ok", &attrs, 0, None);
+        let (text, runs) = styled_row_from_line(&line, &palette);
+        assert_eq!(text, "ok");
+        assert_eq!(runs[0].fg.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn styled_row_reverse_swaps_default_fg_and_bg() {
+        let palette = ColorPalette::default();
+        let mut attrs = wezterm_term::CellAttributes::default();
+        attrs.set_reverse(true);
+        let line = Line::from_text("x", &attrs, 0, None);
+        let (_, runs) = styled_row_from_line(&line, &palette);
+        let expected_fg = srgba_to_hex(palette.background);
+        let expected_bg = srgba_to_hex(palette.foreground);
+        assert_eq!(runs[0].fg.as_deref(), Some(expected_fg.as_str()));
+        assert_eq!(runs[0].bg.as_deref(), Some(expected_bg.as_str()));
+    }
+
+    #[test]
+    fn styled_row_trims_trailing_spaces_from_text_and_runs() {
+        let (text, runs) = styled_row_from_line(&default_line("hi  "), &ColorPalette::default());
+        assert_eq!(text, "hi");
+        assert_eq!(
+            runs,
+            vec![ColorRun {
+                n: 2,
+                fg: None,
+                bg: None
+            }]
+        );
+    }
+
+    #[test]
+    fn join_styled_rows_drops_blank_ends_and_covers_every_scalar() {
+        let def = vec![ColorRun {
+            n: 1,
+            fg: None,
+            bg: None,
+        }];
+        let rows = vec![
+            (String::new(), Vec::new()),
+            ("a".into(), def.clone()),
+            (String::new(), Vec::new()),
+            ("b".into(), def),
+            (String::new(), Vec::new()),
+        ];
+        let (text, runs) = join_styled_rows(&rows);
+        assert_eq!(text, "a\n\nb");
+        let total: usize = runs.iter().map(|run| run.n).sum();
+        assert_eq!(total, text.chars().count());
+        assert!(runs.iter().all(|run| run.fg.is_none() && run.bg.is_none()));
+        assert_eq!(runs.len(), 1);
     }
 
     #[test]

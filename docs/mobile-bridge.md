@@ -97,7 +97,7 @@ Full contract: `openapi/harbor-mobile.yaml` in the mobile repo.
 | POST | `/v1/workspaces/{id}/activate` | Switch active workspace |
 | POST | `/v1/workspaces/{id}/instruction` | Body `{text, submit=true}` |
 | POST | `/v1/workspaces/{id}/key` | Send an allowlisted terminal key (`up`, `down`, `escape`, `ctrl-c`, `space`, `tab`, `shift-tab`) |
-| GET | `/v1/workspaces/{id}/screen?lines=N` | Plain-text screen mirror, N=1..20000, default 60 |
+| GET | `/v1/workspaces/{id}/screen?lines=N` | Screen mirror with plain `text` plus palette-resolved color `runs`, N=1..20000, default 60 |
 | GET | `/v1/workspaces/{id}/speech/hints` | Up to 96 contextual terms for one-shot Android speech recognition |
 
 `POST /v1/workspaces` accepts `{}` or `{"root":"/absolute/desktop/path"}`.
@@ -174,6 +174,13 @@ that pairing.
 API version 1.5.0 adds unmodified `tab` to `/key` (`KeyCode::Tab` with no
 modifiers). The Mac-to-Mac overlay forwards a physical Tab the same way.
 
+API version 1.6.0 adds `agent` and `summary` on each workspace record so the
+mobile list can paint the same sidebar row (directory plus agent lines, never
+the creation-time `name` or a shell process). The screen endpoint stays
+additive: `text` is still the trimmed plain string, and `foreground`,
+`background`, and `runs` carry palette-resolved `#rrggbb` spans. Older clients
+ignore the new fields.
+
 ### Screen endpoint implementation
 
 Workspace id → mux workspace → window → active tab → active pane, then the
@@ -184,8 +191,9 @@ let dims = pane.get_dimensions();
 let bottom_row = dims.physical_top + dims.viewport_rows as isize;
 let top_row = bottom_row.saturating_sub(nlines as isize);
 let (_first_row, lines) = pane.get_lines(top_row..bottom_row);
-// per line: line.as_str().trim_end(), then join_pane_rows drops the blank
-// rows at both ends and joins the rest with '\n'
+// per line: styled_row_from_line trims trailing whitespace and emits color
+// runs; join_styled_rows drops the blank rows at both ends, inserts default-
+// colored newlines, and joins the rest. `text` remains the plain concatenation.
 ```
 
 Blank rows are dropped at both ends because a full-screen program repaints by
@@ -194,7 +202,10 @@ Mirroring those verbatim made the mobile pane render as a blank black area
 until the reader scrolled past them. Interior blank rows are real content and
 are preserved.
 
-Response: `{"text": ..., "lines": N, "alt_screen": bool}`.
+Response: `{"text": ..., "lines": N, "alt_screen": bool, "foreground": "#rrggbb",
+"background": "#rrggbb", "runs": [{"n": ..., "fg": "...", "bg": "..."}, ...]}`.
+`runs` cover every Unicode scalar in `text`; omitted `fg`/`bg` mean the
+defaults. Speech hints still use the plain `pane_text` path.
 All mux access goes through `run_on_main` (see below).
 
 ## Threading rules
@@ -275,9 +286,9 @@ then `window.set_window_position(ScreenPoint)` is applied post-creation.
 - Package id: `ai.terminalharbor.terminal_harbor_mobile`
 - Screen mirror: 1s `Timer.periodic` polling of a 500-line live tail. Scrolling
   up pauses the poll and loads a 17500-line window once, matching
-  `scrollback_lines` in the desktop config. Plain text, monospace, jumps to the
-  bottom on the first load and afterwards auto-scrolls only when near the
-  bottom.
+  `scrollback_lines` in the desktop config. Plain `text` plus palette-resolved
+  color `runs`, monospace, jumps to the bottom on the first load and afterwards
+  auto-scrolls only when near the bottom.
 - Instruction input: `Focus(onKeyEvent:)` intercepts Enter with an
   IME-composition guard (Japanese input: 1st Enter confirms conversion,
   2nd Enter sends), plus `TextInputAction.done` for the software keyboard.
@@ -288,8 +299,9 @@ then `window.set_window_position(ScreenPoint)` is applied post-creation.
   disclosure, request forgery, replay, and response modification. Prefer
   Tailscale Serve HTTPS when confidentiality is required. The legacy `fp`
   field remains compatibility-only.
-- Screen mirror is plain text (no colors/styles) and polling-based, not
-  streamed; it targets the **active pane** of the workspace only.
+- Screen mirror is polling-based, not streamed; it targets the **active pane**
+  of the workspace only. Color runs resolve through `pane.palette()` so a user
+  color scheme on the Mac is what the phone paints.
 - The mobile app can remove an individual local pairing, but this does not
   revoke or delete the corresponding record in desktop
   `state_dir()/mobile-devices.json`. Tokens do not expire and there is no
