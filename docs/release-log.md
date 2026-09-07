@@ -6,6 +6,102 @@
 
 ---
 
+## 2026-09-07 07:55 — Even G2入力待ち要約 API 1.9.0（GUI）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `301443d7a` + dirty tree（既存OpenRouter voice/local-pair差分 + G2要約） |
+| toolchain | rustc 1.97.1 / cargo 1.97.1 |
+| ビルド日時 | 2026-09-07 07:54 |
+| `wezterm-gui` | `b0b2e3b59e8d2e3a7ed807f621705166ad8e2bab16dede58538d487673fa50fb` |
+| `wezterm` | `e59e26ac24965c1f0b8906f13637b06638eb3cf00f2c6555782b85b6a4ab5fb4` |
+| `wezterm-mux-server` | `c38f1aff0fe54d0346803c85f37644c5f5a1eba1f89a2b19b8ca5c0e03b633eb` |
+| `strip-ansi-escapes` | `5a27815b24032707e261517dd0c5d9e7d347e191364e960ba8b720a61deb8531` |
+| 署名 | ad-hoc、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-09-07 07:55 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260907-075417.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)。mux変更なし |
+
+認証済み`POST /v1/workspaces/{id}/g2-view`を追加した。変化中は空白・罫線・点線行を
+除いたライブ出力を返し、2秒停止後は設定済みOpenRouterモデルが入力待ちを判定する。
+入力待ち時だけ直前の指示以降を日本語で要約し、質問・選択肢は元行を原文コピーする。
+失敗時はライブ表示へ戻り、端末本文とモデル入出力はログ・永続化しない。GUI PID
+`83475`から`6063`へ保持再起動し、port 7780とAPI `1.9.0`を確認した。
+
+## 2026-09-06 11:52 — OpenRouter voice POST の Content-Length 修正（GUI）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | dirty tree（`harbor_mobile.rs` Content-Length / prompt / エラー文言） |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`) |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260906-1152.app` |
+
+`http_req` が Content-Length を付けず OpenRouter が 4xx になる問題を修正。失敗時は HTTP 状態などを文言に含める。Handy Harbor HTTP timeout を 20s に延長。
+
+## 2026-09-05 18:16 — 音声 intent を OpenRouter に切替（GUI）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `301443d7a` + 未コミット OpenRouter voice（`harbor_mobile.rs` / `harbor_settings.rs` / `docs/mobile-bridge.md`） |
+| toolchain | rustc 1.97.1 / cargo 1.97.1 |
+| ビルド日時 | 2026-09-05 16:10（wezterm-gui） |
+| `wezterm-gui` | `4d6172485bf6c1c7b2e544a93cb2d3be1d8ec0ca3b0625a7fc3f76ae29b7eeda` |
+| `wezterm` | `d49d12e175b27cdfb2e1a7b5d79d2eb7f31913363254d698c468c9322b6884ff` |
+| `wezterm-mux-server` | `728a037ffb86b7a23285025a0bec17e5228b9fd257b9c97f0577d52749f7d75e` |
+| `strip-ansi-escapes` | `bc5c0b5ac092522a99c108e705c4f490fa3cb67d2f0cc95e1467be75a3bb83a6` |
+| 署名 | ad-hoc、`--verify --deep --strict` 合格 |
+| 配置日時 | 2026-09-05 18:16 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260905-1816.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)。mux 変更なし |
+
+`POST /v1/voice/intent` の意図解析をローカル Ollama から OpenRouter（既定 `deepseek/deepseek-v4-flash-0731`）へ切替。キーは `OPENROUTER_API_KEY`（env / launchctl / ~/.zshrc）→ `settings-v1.json`。
+
+## 2026-09-01 19:52 — 音声のディレクトリ名解決強化（GUI）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | dirty tree（voice directory resolve + Handy STT labels） |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`) |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260901-1952.app` |
+
+発話全文からのディレクトリ basename 一意解決、ハイフン区切り名の正規化を追加。
+Handy 側はワークスペース語彙を Whisper initial_prompt / custom words に注入。
+
+## 2026-09-01 19:04 — 同一 Mac ローカルペア API 1.8.0
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `301443d7a` + 未コミット voice/local-pair 一式 |
+| toolchain | rustc 1.97.1 / cargo 1.97.1 |
+| ビルド日時 | 2026-09-01 19:04 |
+| `wezterm-gui` | `e2a50938443bf5b551f5b9697bc98b5f6217d80d4ec06b3bba118e7a34783a0f` |
+| 署名 | ad-hoc、`--verify --deep --strict` 合格 |
+| 配置日時 | 2026-09-01 19:04 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260901-1904.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`) |
+
+`POST /v1/pair/local`（loopback のみ）を追加。curl で 200 + `local_pair_token` を確認。identity は `1.8.0`。
+
+## 2026-09-01 17:12 — 音声 intent API 1.7.0（GUI bridge）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `301443d7a` + 未コミット `harbor_mobile.rs` / `harbor_settings.rs` / `docs/mobile-bridge.md` / 本配置記録 |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 |
+| ビルド日時 | 2026-09-01 17:12 |
+| `wezterm-gui` | `ed2ba46fed74c02e71b3aa1f9b8043bafe697600b72ded8298ee86b9a5dcc4a4` |
+| `wezterm` | `d49d12e175b27cdfb2e1a7b5d79d2eb7f31913363254d698c468c9322b6884ff` |
+| `wezterm-mux-server` | `728a037ffb86b7a23285025a0bec17e5228b9fd257b9c97f0577d52749f7d75e` |
+| `strip-ansi-escapes` | `622f552a89bdc5ee20c0a29063b120d43a1b6de7d9732a95dbada53a104e2b38` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-09-01 17:12 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260901-1712.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)。mux 変更なし |
+
+`POST /v1/voice/intent`（API 1.7.0）とローカル Ollama `lfm2.5:latest` による
+ワークスペース切替を GUI bridge に追加。voice 関連単体テスト 4 件と
+`harbor_settings` 4 件に合格。Handy Harbor Control Mode からの接続試験前に配置。
+
 ## 2026-08-24 16:25 — macOSの日本語フォールバック修正
 
 | 項目 | 値 |

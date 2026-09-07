@@ -8,6 +8,8 @@ use base64::Engine;
 use config::keyassignment::SpawnTabDomain;
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
+use http_req::request::{Method, Request};
+use http_req::uri::Uri;
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use mux::pane::CachePolicy;
 use mux::Mux;
@@ -17,6 +19,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::convert::TryFrom;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -32,10 +35,16 @@ use window::WindowOps;
 
 pub const DEFAULT_PORT: u16 = 7780;
 const PAIR_TOKEN_TTL: Duration = Duration::from_secs(5 * 60);
-const API_VERSION: &str = "1.6.0";
+const API_VERSION: &str = "1.9.0";
 pub(crate) const AUTH_VERSION: &str = "hmac-sha256-v1";
 const AUTH_CLOCK_SKEW_SECS: u64 = 5 * 60;
 const REPLAY_TTL_SECS: u64 = 10 * 60;
+const MAX_VOICE_TRANSCRIPT_CHARS: usize = 512;
+const G2_LIVE_LINES: usize = 60;
+const G2_CONTEXT_LINES: usize = 2_000;
+const G2_CONTEXT_MAX_BYTES: usize = 64 * 1_024;
+const G2_STABLE_FOR: Duration = Duration::from_secs(2);
+const G2_MODEL_RETRY_AFTER: Duration = Duration::from_secs(30);
 
 fn new_client_id() -> String {
     Uuid::new_v4().to_string()
@@ -96,6 +105,27 @@ struct BridgeInner {
     replay_nonces: VecDeque<(String, String, u64)>,
 }
 
+#[derive(Clone, Debug)]
+struct G2SummaryView {
+    summary: String,
+    question: String,
+    options: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+enum G2Analysis {
+    NotWaiting,
+    Summary(G2SummaryView),
+    Failed { retry_at: Instant },
+}
+
+#[derive(Clone, Debug)]
+struct G2ViewState {
+    fingerprint: String,
+    changed_at: Instant,
+    analysis: Option<G2Analysis>,
+}
+
 lazy_static::lazy_static! {
     static ref SPEECH_TERM_RE: Regex = Regex::new(
         r"(?:[A-Za-z0-9_@.+-]+/)+[A-Za-z0-9_@.+-]+|[A-Za-z][A-Za-z0-9_@.+/-]{2,}"
@@ -113,6 +143,7 @@ lazy_static::lazy_static! {
         qr_png: None,
         replay_nonces: VecDeque::new(),
     });
+    static ref G2_VIEW_STATES: Mutex<HashMap<String, G2ViewState>> = Mutex::new(HashMap::new());
 }
 
 static SERVER_STARTED: AtomicBool = AtomicBool::new(false);
@@ -715,9 +746,25 @@ fn handle_client(mut stream: TcpStream) -> anyhow::Result<()> {
         }
     }
 
-    let response = dispatch(&method, &path, &headers, &body);
+    let peer = stream.peer_addr().ok();
+    let response = dispatch(&method, &path, &headers, &body, peer);
     write_response(&mut stream, response)?;
     Ok(())
+}
+
+fn is_loopback_addr(peer: Option<SocketAddr>) -> bool {
+    match peer {
+        Some(SocketAddr::V4(addr)) => addr.ip().is_loopback(),
+        Some(SocketAddr::V6(addr)) => {
+            let ip = addr.ip();
+            ip.is_loopback()
+                || ip
+                    .to_ipv4_mapped()
+                    .map(|v4| v4.is_loopback())
+                    .unwrap_or(false)
+        }
+        None => false,
+    }
 }
 
 fn write_response(stream: &mut TcpStream, response: HttpResponse) -> anyhow::Result<()> {
@@ -728,6 +775,7 @@ fn write_response(stream: &mut TcpStream, response: HttpResponse) -> anyhow::Res
         202 => "Accepted",
         400 => "Bad Request",
         401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         409 => "Conflict",
@@ -807,6 +855,7 @@ fn dispatch(
     raw_path: &str,
     headers: &HashMap<String, String>,
     body: &[u8],
+    peer: Option<SocketAddr>,
 ) -> HttpResponse {
     if method == "OPTIONS" {
         return signed_response(200, String::new(), None);
@@ -818,6 +867,9 @@ fn dispatch(
 
     if method == "POST" && path == "/v1/pair" {
         return pair(raw_path, headers, body);
+    }
+    if method == "POST" && path == "/v1/pair/local" {
+        return pair_local(headers, body, peer);
     }
 
     let auth = authenticate(method, raw_path, headers, body);
@@ -895,6 +947,28 @@ fn dispatch(
             })
             .to_string(),
         );
+    }
+
+    if method == "POST" && path == "/v1/voice/intent" {
+        #[derive(Deserialize)]
+        struct VoiceIntentBody {
+            text: String,
+        }
+        let parsed: VoiceIntentBody = match serde_json::from_slice(body) {
+            Ok(value) => value,
+            Err(_) => return finish(400, json_error("invalid json body")),
+        };
+        let text = parsed.text.trim();
+        if text.is_empty() || text.chars().count() > MAX_VOICE_TRANSCRIPT_CHARS {
+            return finish(
+                400,
+                json_error("voice transcript must contain 1..512 characters"),
+            );
+        }
+        return match handle_voice_intent(text) {
+            Ok(body) => finish(200, body),
+            Err(err) => finish(500, json_error(&format!("voice intent failed: {err:#}"))),
+        };
     }
 
     if method == "GET" && path == "/v1/workspaces" {
@@ -1073,6 +1147,22 @@ fn dispatch(
 
     if let Some(id) = path
         .strip_prefix("/v1/workspaces/")
+        .and_then(|rest| rest.strip_suffix("/g2-view"))
+    {
+        if method == "POST" {
+            let id = id.to_string();
+            return match run_on_main({
+                let id = id.clone();
+                move || g2_screen_context(&id)
+            }) {
+                Ok(context) => finish(200, g2_view_json(&id, context)),
+                Err(err) => workspace_error(err),
+            };
+        }
+    }
+
+    if let Some(id) = path
+        .strip_prefix("/v1/workspaces/")
         .and_then(|rest| rest.strip_suffix("/screen"))
     {
         if method == "GET" {
@@ -1116,6 +1206,90 @@ pub(crate) fn derive_device_key(
     hk.expand(&info, &mut key)
         .expect("valid HKDF output length");
     key
+}
+
+fn pair_local(
+    headers: &HashMap<String, String>,
+    body: &[u8],
+    peer: Option<SocketAddr>,
+) -> HttpResponse {
+    if !is_loopback_addr(peer) {
+        return signed_response(403, json_error("local pairing is loopback-only"), None);
+    }
+    #[derive(Deserialize)]
+    struct LocalPairBody {
+        auth_version: String,
+        client_id: String,
+        client_nonce: String,
+        #[serde(default)]
+        device_name: Option<String>,
+    }
+    let parsed: LocalPairBody = match serde_json::from_slice(body) {
+        Ok(value) => value,
+        Err(_) => return signed_response(400, json_error("invalid json body"), None),
+    };
+    if parsed.auth_version != AUTH_VERSION {
+        return signed_response(400, json_error("unsupported auth_version"), None);
+    }
+    if Uuid::parse_str(&parsed.client_id).is_err() {
+        return signed_response(400, json_error("invalid client_id"), None);
+    }
+    let nonce = match URL_SAFE_NO_PAD
+        .decode(parsed.client_nonce.as_bytes())
+        .ok()
+        .filter(|value| value.len() == 32)
+    {
+        Some(value) => value,
+        None => return signed_response(400, json_error("invalid client_nonce"), None),
+    };
+    let request_nonce = match headers.get("x-harbor-nonce") {
+        Some(value) if value.len() >= 16 => value.clone(),
+        _ => return signed_response(400, json_error("missing pairing nonce"), None),
+    };
+
+    let local_pair_token = random_token();
+    let mut inner = INNER.lock();
+    let key = derive_device_key(
+        &local_pair_token,
+        &inner.server_id,
+        &parsed.client_id,
+        &nonce,
+    );
+    let stored_secret = URL_SAFE_NO_PAD.encode(&key);
+    let record = DeviceRecord {
+        client_id: parsed.client_id.clone(),
+        token: stored_secret.clone(),
+        name: parsed
+            .device_name
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "Handy".to_string()),
+        created_at: now_unix(),
+        auth_version: 2,
+    };
+    inner.devices.insert(stored_secret, record);
+    if let Err(err) = save_devices(&inner) {
+        log::error!("saving mobile devices: {err:#}");
+    }
+    let host = inner.host.clone();
+    let port = inner.port;
+    let server_id = inner.server_id.clone();
+    drop(inner);
+
+    let endpoints = connection_endpoints(&host, port);
+    let loopback_base = format!("http://127.0.0.1:{port}");
+    signed_response(
+        200,
+        serde_json::json!({
+            "base_url": loopback_base,
+            "server_id": server_id,
+            "client_id": parsed.client_id,
+            "local_pair_token": local_pair_token,
+            "auth_versions": [AUTH_VERSION],
+            "endpoints": endpoints,
+        })
+        .to_string(),
+        Some(HmacResponseAuth { key, request_nonce }),
+    )
 }
 
 fn pair(raw_path: &str, headers: &HashMap<String, String>, body: &[u8]) -> HttpResponse {
@@ -1272,6 +1446,345 @@ fn list_workspaces_json() -> anyhow::Result<String> {
         })
         .collect();
     Ok(serde_json::json!({ "workspaces": workspaces }).to_string())
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct VoiceWorkspace {
+    id: Uuid,
+    name: String,
+    directory: String,
+    agent: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelVoiceIntent {
+    intent: String,
+    target: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionResponse {
+    choices: Vec<ChatChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatChoice {
+    message: ChatMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatMessage {
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelG2View {
+    waiting_for_user: bool,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    question_lines: Vec<usize>,
+    #[serde(default)]
+    option_lines: Vec<usize>,
+}
+
+fn voice_workspaces() -> anyhow::Result<Vec<VoiceWorkspace>> {
+    Ok(harbor_workspace::rows()
+        .into_iter()
+        .map(|row| VoiceWorkspace {
+            id: row.workspace.id,
+            name: row.workspace.name,
+            directory: row.directory,
+            agent: row.agent,
+        })
+        .collect())
+}
+
+fn voice_result(
+    outcome: &str,
+    message: impl Into<String>,
+    workspace: Option<&VoiceWorkspace>,
+) -> String {
+    serde_json::json!({
+        "outcome": outcome,
+        "message": message.into(),
+        "workspace": workspace,
+    })
+    .to_string()
+}
+
+fn openrouter_chat_url(base_url: &str) -> anyhow::Result<String> {
+    let base = base_url.trim().trim_end_matches('/');
+    if base != "https://openrouter.ai/api/v1" {
+        anyhow::bail!("voice model URL must be the OpenRouter API");
+    }
+    Ok(format!("{base}/chat/completions"))
+}
+
+fn voice_model_unavailable_message(err: &anyhow::Error) -> String {
+    let detail = err.to_string();
+    let reason = if detail.contains("API key is not configured") {
+        "API キー未設定".to_string()
+    } else if let Some(status) = detail.strip_prefix("OpenRouter returned HTTP ") {
+        format!("HTTP {status}")
+    } else if detail.to_ascii_lowercase().contains("timed out")
+        || detail.to_ascii_lowercase().contains("timeout")
+    {
+        "タイムアウト".to_string()
+    } else if detail.contains("request failed") {
+        "接続失敗".to_string()
+    } else if detail.contains("parsing") {
+        "応答を解析できません".to_string()
+    } else {
+        "応答なし".to_string()
+    };
+    format!("意図解析モデル（OpenRouter）が応答しませんでした（{reason}）")
+}
+
+fn parse_intent_content(content: &str) -> anyhow::Result<ModelVoiceIntent> {
+    let trimmed = content.trim();
+    if let Ok(intent) = serde_json::from_str::<ModelVoiceIntent>(trimmed) {
+        return Ok(intent);
+    }
+    let Some(start) = trimmed.find('{') else {
+        anyhow::bail!("parsing constrained voice intent");
+    };
+    let Some(end) = trimmed.rfind('}') else {
+        anyhow::bail!("parsing constrained voice intent");
+    };
+    if end <= start {
+        anyhow::bail!("parsing constrained voice intent");
+    }
+    serde_json::from_str(&trimmed[start..=end]).context("parsing constrained voice intent")
+}
+
+fn infer_voice_intent(
+    transcript: &str,
+    workspaces: &[VoiceWorkspace],
+) -> anyhow::Result<ModelVoiceIntent> {
+    let settings = crate::harbor_settings::voice_model_settings();
+    if settings.api_key.is_empty() {
+        anyhow::bail!("OpenRouter API key is not configured");
+    }
+    let url = openrouter_chat_url(&settings.base_url)?;
+    let uri =
+        Uri::try_from(url.as_str()).map_err(|err| anyhow!("invalid OpenRouter URL: {err}"))?;
+    let candidates: Vec<serde_json::Value> = workspaces
+        .iter()
+        .map(|workspace| {
+            serde_json::json!({
+                "id": workspace.id,
+                "name": workspace.name,
+                "directory": workspace.directory,
+                "agent": workspace.agent,
+            })
+        })
+        .collect();
+    let system = format!(
+        "You classify Terminal Harbor voice commands. Only switch_workspace is supported. \
+Return unsupported for every other request. When switching, set target to the matching \
+workspace directory, name, or id from the list. Do not invent a workspace. Spoken Japanese \
+may match English directory names. Codex may be spoken as コーデックス and Claude as クロード. \
+Reply with JSON only: {{\"intent\":\"switch_workspace\"|\"unsupported\",\"target\":\"...\"}}. \
+Current public workspaces: {}",
+        serde_json::to_string(&candidates)?
+    );
+    let request_body = serde_json::to_vec(&serde_json::json!({
+        "model": settings.model,
+        "stream": false,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": transcript}
+        ]
+    }))?;
+    let auth = format!("Bearer {}", settings.api_key);
+    let content_len = request_body.len().to_string();
+    let mut response_body = Vec::new();
+    let response = Request::new(&uri)
+        .method(Method::POST)
+        .timeout(Duration::from_millis(settings.timeout_ms))
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .header("Content-Length", &content_len)
+        .header("Authorization", auth.as_str())
+        .header("User-Agent", "Terminal Harbor")
+        .header("HTTP-Referer", "https://github.com/wezterm/wezterm")
+        .header("X-Title", "Terminal Harbor")
+        .body(&request_body)
+        .send(&mut response_body)
+        .map_err(|err| anyhow!("OpenRouter request failed: {err}"))?;
+    if u16::from(response.status_code()) != 200 {
+        anyhow::bail!(
+            "OpenRouter returned HTTP {}",
+            u16::from(response.status_code())
+        );
+    }
+    let response: ChatCompletionResponse =
+        serde_json::from_slice(&response_body).context("parsing OpenRouter response")?;
+    let content = response
+        .choices
+        .first()
+        .and_then(|choice| choice.message.content.as_deref())
+        .ok_or_else(|| anyhow!("OpenRouter response missing content"))?;
+    parse_intent_content(content)
+}
+
+fn normalize_voice_target(value: &str) -> String {
+    value
+        .to_lowercase()
+        .replace("コーデックス", "codex")
+        .replace("クロード", "claude")
+        .chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .collect()
+}
+
+fn voice_field_variants(value: &str) -> Vec<String> {
+    let mut variants = Vec::new();
+    let push = |out: &mut Vec<String>, raw: &str| {
+        let normalized = normalize_voice_target(raw);
+        if !normalized.is_empty() && !out.iter().any(|existing| existing == &normalized) {
+            out.push(normalized);
+        }
+    };
+    push(&mut variants, value);
+    // "terminal-harbor" / "terminal_harbor" also match spoken "terminal harbor".
+    if value.contains('-') || value.contains('_') {
+        push(&mut variants, &value.replace(['-', '_'], " "));
+    }
+    variants
+}
+
+fn target_score(target: &str, workspace: &VoiceWorkspace) -> u8 {
+    let target = normalize_voice_target(target);
+    if target.is_empty() {
+        return 0;
+    }
+    let fields = [
+        workspace.id.to_string(),
+        workspace.name.clone(),
+        workspace.directory.clone(),
+        workspace.agent.clone().unwrap_or_default(),
+    ];
+    fields
+        .iter()
+        .flat_map(|field| voice_field_variants(field))
+        .map(|field| {
+            if field == target {
+                100
+            } else if !field.is_empty() && (field.contains(&target) || target.contains(&field)) {
+                // Prefer longer directory hits over tiny substrings.
+                let shorter = field.len().min(target.len()) as u8;
+                50u8.saturating_add(shorter.min(40))
+            } else {
+                0
+            }
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+fn resolve_voice_workspace<'a>(
+    target: &str,
+    workspaces: &'a [VoiceWorkspace],
+) -> Result<&'a VoiceWorkspace, &'static str> {
+    let mut scored: Vec<(u8, &VoiceWorkspace)> = workspaces
+        .iter()
+        .map(|workspace| (target_score(target, workspace), workspace))
+        .filter(|(score, _)| *score > 0)
+        .collect();
+    scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    let Some((best_score, best)) = scored.first().copied() else {
+        return Err("unknown");
+    };
+    if scored.get(1).map(|(score, _)| *score == best_score) == Some(true) {
+        return Err("ambiguous");
+    }
+    Ok(best)
+}
+
+fn handle_voice_intent(transcript: &str) -> anyhow::Result<String> {
+    let workspaces = run_on_main(voice_workspaces)?;
+    if workspaces.is_empty() {
+        return Ok(voice_result(
+            "failed",
+            "切り替え可能なワークスペースがありません",
+            None,
+        ));
+    }
+    // Prefer a unique directory/agent hit in the raw transcript so spoken folder
+    // names work even when the classifier is slow or returns a weak target.
+    let direct = resolve_voice_workspace(transcript, &workspaces);
+    let intent = match infer_voice_intent(transcript, &workspaces) {
+        Ok(intent) => intent,
+        Err(err) => {
+            if let Ok(workspace) = direct {
+                let id = workspace.id.to_string();
+                let chosen = workspace.clone();
+                run_on_main(move || activate_workspace_and_focus(&id))?;
+                return Ok(voice_result(
+                    "executed",
+                    format!("{} に切り替えました", chosen.directory),
+                    Some(&chosen),
+                ));
+            }
+            log::warn!("voice intent model unavailable: {err:#}");
+            return Ok(voice_result(
+                "model_unavailable",
+                voice_model_unavailable_message(&err),
+                None,
+            ));
+        }
+    };
+    let workspace = if intent.intent == "switch_workspace" {
+        match resolve_voice_workspace(&intent.target, &workspaces) {
+            Ok(workspace) => workspace.clone(),
+            Err("ambiguous") => {
+                return Ok(voice_result(
+                    "ambiguous",
+                    "対象のワークスペースを一意に特定できません",
+                    None,
+                ))
+            }
+            Err(_) => match direct {
+                Ok(workspace) => workspace.clone(),
+                Err("ambiguous") => {
+                    return Ok(voice_result(
+                        "ambiguous",
+                        "対象のワークスペースを一意に特定できません",
+                        None,
+                    ))
+                }
+                Err(_) => {
+                    return Ok(voice_result(
+                        "unsupported",
+                        "指定されたワークスペースが見つかりません",
+                        None,
+                    ))
+                }
+            },
+        }
+    } else {
+        match direct {
+            Ok(workspace) => workspace.clone(),
+            Err(_) => {
+                return Ok(voice_result(
+                    "unsupported",
+                    "この操作はまだ対応していません",
+                    None,
+                ))
+            }
+        }
+    };
+    let id = workspace.id.to_string();
+    run_on_main(move || activate_workspace_and_focus(&id))?;
+    Ok(voice_result(
+        "executed",
+        format!("{} に切り替えました", workspace.directory),
+        Some(&workspace),
+    ))
 }
 
 fn create_workspace(requested_root: Option<String>) -> anyhow::Result<String> {
@@ -1502,6 +2015,17 @@ fn activate_workspace(id: &str) -> anyhow::Result<()> {
             log::error!("mobile activate workspace: {err:#}");
         }
     })));
+    Ok(())
+}
+
+fn activate_workspace_and_focus(id: &str) -> anyhow::Result<()> {
+    activate_workspace(id)?;
+    let front_end =
+        crate::frontend::try_front_end().ok_or_else(|| anyhow!("frontend unavailable"))?;
+    if let Some(window) = front_end.first_window() {
+        window.show();
+        window.focus();
+    }
     Ok(())
 }
 
@@ -1999,6 +2523,240 @@ fn pane_mirror(
     )
 }
 
+#[derive(Debug)]
+struct G2ScreenContext {
+    live_text: String,
+    model_text: String,
+    model_lines: Vec<String>,
+    agent_detected: bool,
+}
+
+fn is_g2_separator_line(line: &str) -> bool {
+    const SEPARATORS: &str = "-_.=~‐‑‒–—―·•⋅⋯…─━│┃┄┅┆┇┈┉┊┋╌╍╎╏┌┐└┘├┤┬┴┼╭╮╰╯";
+    let trimmed = line.trim();
+    !trimmed.is_empty()
+        && trimmed
+            .chars()
+            .all(|ch| ch.is_whitespace() || SEPARATORS.contains(ch))
+}
+
+fn filter_g2_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty() && !is_g2_separator_line(line))
+        .map(str::to_string)
+        .collect()
+}
+
+fn tail_utf8_bytes(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut start = value.len() - max_bytes;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    &value[start..]
+}
+
+fn g2_screen_context(id: &str) -> anyhow::Result<G2ScreenContext> {
+    let workspace = find_workspace(id)?;
+    let pane = workspace_active_pane(&workspace)?;
+    let live_lines = filter_g2_lines(&pane_text(&pane, G2_LIVE_LINES));
+    let context_lines = filter_g2_lines(&pane_text(&pane, G2_CONTEXT_LINES));
+    let joined = context_lines.join("\n");
+    let bounded = tail_utf8_bytes(&joined, G2_CONTEXT_MAX_BYTES);
+    let model_lines: Vec<String> = bounded.lines().map(str::to_string).collect();
+    let model_text = model_lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| format!("{}: {line}", index + 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let agent_detected = harbor_workspace::rows()
+        .into_iter()
+        .find(|row| row.workspace.id.to_string() == id)
+        .and_then(|row| row.agent)
+        .is_some();
+    Ok(G2ScreenContext {
+        live_text: live_lines.join("\n"),
+        model_text,
+        model_lines,
+        agent_detected,
+    })
+}
+
+fn g2_live_json(text: &str) -> String {
+    serde_json::json!({"view": "live", "text": text}).to_string()
+}
+
+fn g2_summary_json(view: &G2SummaryView) -> String {
+    serde_json::json!({
+        "view": "summary",
+        "summary": view.summary,
+        "question": view.question,
+        "options": view.options,
+    })
+    .to_string()
+}
+
+fn g2_view_json(id: &str, context: G2ScreenContext) -> String {
+    let live = || g2_live_json(&context.live_text);
+    if context.model_text.is_empty() || !context.agent_detected {
+        return live();
+    }
+    let fingerprint = sha256_hex(context.model_text.as_bytes());
+    let now = Instant::now();
+    {
+        let mut states = G2_VIEW_STATES.lock();
+        let state = states.entry(id.to_string()).or_insert_with(|| G2ViewState {
+            fingerprint: fingerprint.clone(),
+            changed_at: now,
+            analysis: None,
+        });
+        if state.fingerprint != fingerprint {
+            state.fingerprint = fingerprint.clone();
+            state.changed_at = now;
+            state.analysis = None;
+            return live();
+        }
+        if now.duration_since(state.changed_at) < G2_STABLE_FOR {
+            return live();
+        }
+        match &state.analysis {
+            Some(G2Analysis::NotWaiting) => return live(),
+            Some(G2Analysis::Summary(view)) => return g2_summary_json(view),
+            Some(G2Analysis::Failed { retry_at }) if now < *retry_at => return live(),
+            _ => {}
+        }
+    }
+
+    let analysis = match infer_g2_view(&context.model_text) {
+        Ok(model) => match g2_summary_from_model(model, &context.model_lines) {
+            Some(view) => G2Analysis::Summary(view),
+            None => G2Analysis::NotWaiting,
+        },
+        Err(err) => {
+            log::warn!("G2 view model unavailable: {err:#}");
+            G2Analysis::Failed {
+                retry_at: Instant::now() + G2_MODEL_RETRY_AFTER,
+            }
+        }
+    };
+    let response = match &analysis {
+        G2Analysis::Summary(view) => g2_summary_json(view),
+        _ => live(),
+    };
+    let mut states = G2_VIEW_STATES.lock();
+    if let Some(state) = states.get_mut(id) {
+        if state.fingerprint == fingerprint {
+            state.analysis = Some(analysis);
+        }
+    }
+    response
+}
+
+fn parse_g2_model_content(content: &str) -> anyhow::Result<ModelG2View> {
+    let trimmed = content.trim();
+    if let Ok(value) = serde_json::from_str::<ModelG2View>(trimmed) {
+        return Ok(value);
+    }
+    let start = trimmed.find('{').context("parsing G2 view JSON")?;
+    let end = trimmed.rfind('}').context("parsing G2 view JSON")?;
+    if end <= start {
+        anyhow::bail!("parsing G2 view JSON");
+    }
+    serde_json::from_str(&trimmed[start..=end]).context("parsing G2 view JSON")
+}
+
+fn infer_g2_view(screen: &str) -> anyhow::Result<ModelG2View> {
+    let settings = crate::harbor_settings::voice_model_settings();
+    if settings.api_key.is_empty() {
+        anyhow::bail!("OpenRouter API key is not configured");
+    }
+    let url = openrouter_chat_url(&settings.base_url)?;
+    let uri =
+        Uri::try_from(url.as_str()).map_err(|err| anyhow!("invalid OpenRouter URL: {err}"))?;
+    let system = "You inspect the current Terminal Harbor screen for an AI coding agent. \
+Return waiting_for_user=true only when the latest visible state explicitly asks the user for a \
+new instruction, confirmation, permission, answer, or a choice. A quiet progress screen, spinner, \
+ongoing reasoning, completed command without an input prompt, or ordinary shell prompt is not \
+waiting. When waiting, identify the latest user prompt in the numbered transcript and summarize in \
+concise Japanese everything performed after that prompt. Preserve filenames, commands, test results, \
+errors, and numbers. The summary must fit about two small glasses screens. Put no question or choices \
+inside summary. Return question_lines and option_lines as 1-based source line numbers so the server can \
+copy those lines verbatim. Use only valid line numbers. Reply with JSON only: \
+{\"waiting_for_user\":boolean,\"summary\":\"...\",\"question_lines\":[1],\"option_lines\":[2,3]}.";
+    let request_body = serde_json::to_vec(&serde_json::json!({
+        "model": settings.model,
+        "stream": false,
+        "temperature": 0,
+        "max_tokens": 900,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": screen}
+        ]
+    }))?;
+    let auth = format!("Bearer {}", settings.api_key);
+    let content_len = request_body.len().to_string();
+    let mut response_body = Vec::new();
+    let response = Request::new(&uri)
+        .method(Method::POST)
+        .timeout(Duration::from_millis(settings.timeout_ms))
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .header("Content-Length", &content_len)
+        .header("Authorization", auth.as_str())
+        .header("User-Agent", "Terminal Harbor")
+        .header("HTTP-Referer", "https://github.com/wezterm/wezterm")
+        .header("X-Title", "Terminal Harbor")
+        .body(&request_body)
+        .send(&mut response_body)
+        .map_err(|err| anyhow!("OpenRouter request failed: {err}"))?;
+    if u16::from(response.status_code()) != 200 {
+        anyhow::bail!(
+            "OpenRouter returned HTTP {}",
+            u16::from(response.status_code())
+        );
+    }
+    let response: ChatCompletionResponse =
+        serde_json::from_slice(&response_body).context("parsing OpenRouter response")?;
+    let content = response
+        .choices
+        .first()
+        .and_then(|choice| choice.message.content.as_deref())
+        .ok_or_else(|| anyhow!("OpenRouter response missing content"))?;
+    parse_g2_model_content(content)
+}
+
+fn selected_g2_lines(indices: &[usize], lines: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    indices
+        .iter()
+        .filter_map(|index| index.checked_sub(1).and_then(|index| lines.get(index)))
+        .filter(|line| seen.insert((*line).clone()))
+        .cloned()
+        .collect()
+}
+
+fn g2_summary_from_model(model: ModelG2View, lines: &[String]) -> Option<G2SummaryView> {
+    if !model.waiting_for_user {
+        return None;
+    }
+    let summary = model.summary.trim().chars().take(1_200).collect::<String>();
+    let question = selected_g2_lines(&model.question_lines, lines).join("\n");
+    let options = selected_g2_lines(&model.option_lines, lines);
+    if summary.is_empty() && question.is_empty() && options.is_empty() {
+        return None;
+    }
+    Some(G2SummaryView {
+        summary,
+        question,
+        options,
+    })
+}
+
 /// Render the last `nlines` lines of the workspace's active pane as plain
 /// text plus palette-resolved color runs so the mobile app can mirror the
 /// terminal screen.
@@ -2375,6 +3133,208 @@ mod tests {
             Some("client test dart")
         );
         assert_eq!(fixed_spoken_alias("Codex"), Some("コーデックス"));
+    }
+
+    fn voice_workspace(
+        id: &str,
+        name: &str,
+        directory: &str,
+        agent: Option<&str>,
+    ) -> VoiceWorkspace {
+        VoiceWorkspace {
+            id: Uuid::parse_str(id).unwrap(),
+            name: name.to_string(),
+            directory: directory.to_string(),
+            agent: agent.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn voice_target_resolves_japanese_agent_aliases() {
+        let workspaces = vec![
+            voice_workspace(
+                "11111111-1111-4111-8111-111111111111",
+                "desktop",
+                "terminal-harbor",
+                Some("Codex"),
+            ),
+            voice_workspace(
+                "22222222-2222-4222-8222-222222222222",
+                "mobile",
+                "terminal-harbor-mobile",
+                Some("Claude"),
+            ),
+        ];
+        assert_eq!(
+            resolve_voice_workspace("クロード", &workspaces)
+                .unwrap()
+                .name,
+            "mobile"
+        );
+        assert_eq!(
+            resolve_voice_workspace("コーデックス", &workspaces)
+                .unwrap()
+                .name,
+            "desktop"
+        );
+        assert_eq!(
+            resolve_voice_workspace("terminal harbor に切り替えて", &workspaces)
+                .unwrap()
+                .directory,
+            "terminal-harbor"
+        );
+    }
+
+    #[test]
+    fn voice_target_resolves_directory_basename() {
+        let workspaces = vec![
+            voice_workspace(
+                "11111111-1111-4111-8111-111111111111",
+                "one",
+                "terminal-harbor",
+                None,
+            ),
+            voice_workspace("22222222-2222-4222-8222-222222222222", "two", "Handy", None),
+        ];
+        assert_eq!(
+            resolve_voice_workspace("handy", &workspaces)
+                .unwrap()
+                .directory,
+            "Handy"
+        );
+        assert_eq!(
+            resolve_voice_workspace("terminal-harbor に移動", &workspaces)
+                .unwrap()
+                .directory,
+            "terminal-harbor"
+        );
+    }
+
+    #[test]
+    fn voice_target_refuses_ambiguous_or_unknown_matches() {
+        let workspaces = vec![
+            voice_workspace(
+                "11111111-1111-4111-8111-111111111111",
+                "one",
+                "one",
+                Some("Claude"),
+            ),
+            voice_workspace(
+                "22222222-2222-4222-8222-222222222222",
+                "two",
+                "two",
+                Some("Claude"),
+            ),
+        ];
+        assert_eq!(
+            resolve_voice_workspace("Claude", &workspaces),
+            Err("ambiguous")
+        );
+        assert_eq!(
+            resolve_voice_workspace("missing", &workspaces),
+            Err("unknown")
+        );
+    }
+
+    #[test]
+    fn voice_model_endpoint_must_remain_openrouter() {
+        assert!(openrouter_chat_url("https://openrouter.ai/api/v1").is_ok());
+        assert!(openrouter_chat_url("https://openrouter.ai/api/v1/").is_ok());
+        assert!(openrouter_chat_url("https://example.com").is_err());
+        assert!(openrouter_chat_url("http://127.0.0.1:11434").is_err());
+    }
+
+    #[test]
+    fn voice_model_unavailable_message_is_sanitized() {
+        assert!(
+            voice_model_unavailable_message(&anyhow!("OpenRouter API key is not configured"))
+                .contains("API キー未設定")
+        );
+        assert!(
+            voice_model_unavailable_message(&anyhow!("OpenRouter returned HTTP 400"))
+                .contains("HTTP 400")
+        );
+        assert!(
+            voice_model_unavailable_message(&anyhow!("OpenRouter request failed: timed out"))
+                .contains("タイムアウト")
+        );
+    }
+
+    #[test]
+    fn parse_intent_content_accepts_raw_and_wrapped_json() {
+        let raw = parse_intent_content(r#"{"intent":"switch_workspace","target":"harness-node"}"#)
+            .unwrap();
+        assert_eq!(raw.intent, "switch_workspace");
+        assert_eq!(raw.target, "harness-node");
+
+        let wrapped = parse_intent_content(
+            "Sure.\n```json\n{\"intent\":\"unsupported\",\"target\":\"\"}\n```",
+        )
+        .unwrap();
+        assert_eq!(wrapped.intent, "unsupported");
+    }
+
+    #[test]
+    fn g2_filter_drops_blank_rule_and_dotted_rows() {
+        let text = "\n────────\nworking\n. . .\nerror: failed\n--- result ---\n";
+        assert_eq!(
+            filter_g2_lines(text),
+            vec!["working", "error: failed", "--- result ---"]
+        );
+    }
+
+    #[test]
+    fn g2_context_limit_keeps_utf8_intact() {
+        let text = "前半😀後半";
+        let tail = tail_utf8_bytes(text, 7);
+        assert_eq!(tail, "後半");
+        assert!(tail.is_char_boundary(0));
+    }
+
+    #[test]
+    fn g2_model_uses_original_question_and_option_lines() {
+        let lines = vec![
+            "Tests passed".to_string(),
+            "続行しますか？".to_string(),
+            "1. コミット".to_string(),
+            "2. 修正を続ける".to_string(),
+        ];
+        let view = g2_summary_from_model(
+            ModelG2View {
+                waiting_for_user: true,
+                summary: "テストまで完了。".to_string(),
+                question_lines: vec![2, 99],
+                option_lines: vec![3, 4, 3],
+            },
+            &lines,
+        )
+        .unwrap();
+        assert_eq!(view.question, "続行しますか？");
+        assert_eq!(view.options, vec!["1. コミット", "2. 修正を続ける"]);
+    }
+
+    #[test]
+    fn g2_non_waiting_model_result_has_no_summary() {
+        assert!(g2_summary_from_model(
+            ModelG2View {
+                waiting_for_user: false,
+                summary: "ignored".to_string(),
+                question_lines: vec![],
+                option_lines: vec![],
+            },
+            &[],
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn local_pairing_accepts_only_loopback_peers() {
+        assert!(is_loopback_addr(Some("127.0.0.1:12345".parse().unwrap())));
+        assert!(is_loopback_addr(Some("[::1]:12345".parse().unwrap())));
+        assert!(!is_loopback_addr(Some(
+            "192.168.1.10:7780".parse().unwrap()
+        )));
+        assert!(!is_loopback_addr(None));
     }
 }
 

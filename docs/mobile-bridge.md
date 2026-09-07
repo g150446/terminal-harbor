@@ -85,6 +85,7 @@ Full contract: `openapi/harbor-mobile.yaml` in the mobile repo.
 | Method | Path | Notes |
 |---|---|---|
 | POST | `/v1/pair` | No auth. One-time token → device token |
+| POST | `/v1/pair/local` | Loopback only. Same-machine HMAC pair without QR (Handy) |
 | GET | `/v1/identity` | Stable server identity; signed for authenticated clients |
 | GET | `/v1/session` | Connection check plus desktop identity metadata |
 | GET | `/v1/workspaces` | Workspace list with activity state |
@@ -98,7 +99,9 @@ Full contract: `openapi/harbor-mobile.yaml` in the mobile repo.
 | POST | `/v1/workspaces/{id}/instruction` | Body `{text, submit=true}` |
 | POST | `/v1/workspaces/{id}/key` | Send an allowlisted terminal key (`up`, `down`, `escape`, `ctrl-c`, `space`, `tab`, `shift-tab`) |
 | GET | `/v1/workspaces/{id}/screen?lines=N` | Screen mirror with plain `text` plus palette-resolved color `runs`, N=1..20000, default 60 |
+| POST | `/v1/workspaces/{id}/g2-view` | Filtered live output or an OpenRouter waiting-state summary for Even G2 |
 | GET | `/v1/workspaces/{id}/speech/hints` | Up to 96 contextual terms for one-shot Android speech recognition |
+| POST | `/v1/voice/intent` | Authenticated. Interpret a short transcript with OpenRouter and execute only an unambiguous workspace switch |
 
 `POST /v1/workspaces` accepts `{}` or `{"root":"/absolute/desktop/path"}`.
 Blank or absent `root` uses the selected workspace root, then the desktop home
@@ -180,6 +183,46 @@ the creation-time `name` or a shell process). The screen endpoint stays
 additive: `text` is still the trimmed plain string, and `foreground`,
 `background`, and `runs` carry palette-resolved `#rrggbb` spans. Older clients
 ignore the new fields.
+
+API version 1.7.0 adds authenticated `POST /v1/voice/intent`. The body is
+`{"text":"..."}` with 1..512 characters. The bridge asks OpenRouter
+(default `https://openrouter.ai/api/v1`, `deepseek/deepseek-v4-flash-0731`,
+10s timeout) to classify the transcript as JSON with `temperature:0`. The model
+must set `target` to a live workspace `directory`, `name`, or `id` (Japanese
+speech may map onto English directory names). Code then scores that target
+against public labels only (`id`, `name`, directory basename, `agent`). The API
+key is `OPENROUTER_API_KEY` from the process environment, `launchctl getenv`,
+`~/.zshrc`, then `openrouter_api_key` in Harbor settings. The OpenRouter POST
+must include `Content-Length` (`http_req` does not add it). Version 1 executes
+only an unambiguous `switch_workspace`; it focuses the Terminal Harbor window
+on success. Outcomes are `executed`, `ambiguous`, `unsupported`,
+`model_unavailable`, and `failed`. Ambiguous, unknown, unsupported, broken JSON,
+timeouts, and model outages are no-ops. Transcripts and model payloads stay out
+of production logs. Voice model URL, name, timeout, and optional API key live in
+Harbor settings (`settings-v1.json`) with OpenRouter-only URL enforcement. Older
+clients ignore the endpoint.
+
+API version 1.8.0 adds `POST /v1/pair/local` for same-machine clients (Handy).
+The handler inspects the TCP peer address and accepts only loopback
+(`127.0.0.1` / `::1`). It mints an HMAC device record without a QR offer and
+returns `local_pair_token` once so the client can derive the device key.
+LAN/remote peers still use `/v1/pair` with an active Pair mobile offer.
+
+API version 1.9.0 adds authenticated `POST /v1/workspaces/{id}/g2-view`.
+While the terminal changes, it returns the last 60 rows after removing blank
+rows and rows made only of rule/dot characters. After the filtered screen is
+unchanged for two seconds, the bridge sends at most 2,000 rows / 64 KiB to the
+OpenRouter model already configured for Harbor voice control. The model must
+first determine that the agent explicitly shows a question, confirmation,
+permission request, or choices. Only then does the response switch from
+`view=live` to `view=summary`.
+
+The summary is Japanese, while question and option lines are copied verbatim
+from model-selected source line numbers. Identical screens reuse an in-memory
+decision; failures fall back to the filtered live view and retry after 30
+seconds. Screen contents, prompts, model responses, and summaries are never
+logged or persisted. Clients should fall back to `/screen` when an older bridge
+returns `404`.
 
 ### Screen endpoint implementation
 
