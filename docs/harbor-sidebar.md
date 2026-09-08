@@ -9,17 +9,20 @@ Each workspace row is one line of live directory, followed by two agent lines
 that appear only while an AI agent is running:
 
 ```text
-●  directory
+1  ●  directory
   agent
   one-line task summary
 ```
 
 ```text
-●  harbor
+1  ●  harbor
   Claude
   Removing the workspace folder name from the sidebar
 ```
 
+- The leading number is 1-based display order. It matches
+  `ActivateWorkspace` / `⌘1`–`⌘9`. Closing a row renumbers the survivors.
+  Remote peer rows are not numbered.
 - `directory` is always present. It is a basename such as `terminal-harbor`,
   never a full path.
 - `agent` and the task summary are omitted entirely when no AI agent is
@@ -36,7 +39,8 @@ tab switches, so displaying it alongside the live directory showed the same
 folder twice with one copy permanently stale. The field is still persisted and
 still used by `unique_name()` and the launcher palette (`overlay/launcher.rs`).
 The mobile list API still includes `name` for older clients, but the companion
-app paints the same directory-first row as this sidebar.
+app paints the same directory-first row as this sidebar, without the desktop
+index prefix.
 
 These rules avoid leaking long local paths into the sidebar and keep the
 workspace location visible independently of agent status.
@@ -268,8 +272,9 @@ Manual acceptance checks on macOS. `wezterm cli list --format json` reports the
 pane titles and CWDs the sidebar derives from, so expected values can be
 checked against it:
 
-- no agent: a single row line with the active directory basename, and no
-  `zsh`-style process name;
+- no agent: a single row line with the 1-based index, activity glyph, and
+  active directory basename, and no `zsh`-style process name;
+- `⌘1` activates the first numbered row; closing a row renumbers the rest;
 - Claude: `Claude` on line 2 and its current task on line 3, with no visible
   relayout while only the spinner advances;
 - Cursor CLI (`agent` or `cursor-agent`): `Cursor` on line 2 and the pane
@@ -292,11 +297,12 @@ checked against it:
 
 A paired Mac appears as a host heading under **Pair another Harbor**. Its
 workspace rows use the same activity glyph and directory basename as local
-rows. They must not run `SwitchToWorkspace` locally: a click opens the remote
-screen overlay and sends input over the mobile bridge. Full remote paths stay
+rows, without the 1-based index prefix. They must not run `SwitchToWorkspace`
+locally: a click opens the remote screen overlay and sends input over the
+mobile bridge. Full remote paths stay
 off the sidebar. Pair URIs, tokens, and secrets stay out of the sidebar, logs,
 and commits. See [`harbor-peers.md`](harbor-peers.md).
 
 Unit tests should continue covering basename extraction (including `/` and
 non-ASCII paths), `KNOWN_AGENTS` matching, spinner stripping, uninformative
-title rejection, and cell-width truncation.
+title rejection, 1-based title-line numbering, and cell-width truncation.

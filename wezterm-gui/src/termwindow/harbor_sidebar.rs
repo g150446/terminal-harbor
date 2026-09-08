@@ -1,5 +1,5 @@
-use crate::termwindow::box_model::*;
 use crate::termwindow::UIItemType;
+use crate::termwindow::box_model::*;
 use crate::utilsprites::RenderMetrics;
 use crate::{harbor_mobile, harbor_peer, harbor_workspace};
 use config::{Dimension, DimensionContext};
@@ -91,6 +91,19 @@ fn truncate_line(text: &str, max_cols: usize) -> String {
     }
     out.push('…');
     out
+}
+
+/// First line of a local workspace row: 1-based index, activity glyph, directory.
+/// The index is display order, matching `ActivateWorkspace` / `⌘1`–`⌘9`.
+/// Remote peer rows do not use this prefix.
+fn workspace_title_line(index: usize, glyph: &str, directory: &str, max_cols: usize) -> String {
+    let prefix = format!("{}  {}", index + 1, glyph);
+    let reserved = unicode_column_width(&prefix, None) + 2;
+    format!(
+        "{}  {}",
+        prefix,
+        truncate_line(directory, max_cols.saturating_sub(reserved))
+    )
 }
 
 /// Detail lines for a row: the agent name, then its one-line task summary.
@@ -551,18 +564,14 @@ impl crate::TermWindow {
             );
         }
 
-        for row in harbor_workspace::rows() {
+        for (index, row) in harbor_workspace::rows().into_iter().enumerate() {
             let (colors, hover) = Self::sidebar_colors(row.selected);
             // Line 1 is the live directory; the creation-time workspace name is
             // deliberately not shown, since it never follows `cd` or tab
             // switches.
             let title = wrapped_text_element(
                 &font,
-                &format!(
-                    "{}  {}",
-                    row.activity.glyph(),
-                    truncate_line(&row.directory, max_cols.saturating_sub(3))
-                ),
+                &workspace_title_line(index, row.activity.glyph(), &row.directory, max_cols),
                 max_cols,
                 colors.clone(),
             );
@@ -749,7 +758,7 @@ impl crate::TermWindow {
 mod tests {
     use super::{
         new_workspace_directory, truncate_line, unicode_column_width, workspace_detail,
-        wrap_sidebar_lines,
+        workspace_title_line, wrap_sidebar_lines,
     };
 
     #[test]
@@ -784,6 +793,28 @@ mod tests {
     fn preserves_explicit_newlines() {
         let text = "line one\nline two";
         assert_eq!(wrap_sidebar_lines(text, 80), vec!["line one", "line two"]);
+    }
+
+    #[test]
+    fn title_line_numbers_from_one_in_display_order() {
+        assert_eq!(workspace_title_line(0, "●", "harbor", 40), "1  ●  harbor");
+        assert_eq!(workspace_title_line(9, "○", "harbor", 40), "10  ○  harbor");
+    }
+
+    #[test]
+    fn title_line_fits_the_row_width_including_the_index() {
+        let max_cols = 20;
+        let long_ascii = "a".repeat(200);
+        let long_cjk = "作業内容の要約がとても長い場合のテキスト".repeat(4);
+        for (index, directory) in [(0usize, long_ascii.as_str()), (9, long_cjk.as_str())] {
+            let line = workspace_title_line(index, "●", directory, max_cols);
+            assert!(
+                unicode_column_width(&line, None) <= max_cols,
+                "line {:?} exceeds {} cells",
+                line,
+                max_cols
+            );
+        }
     }
 
     #[test]
@@ -828,7 +859,9 @@ mod tests {
             for line in lines {
                 assert!(
                     unicode_column_width(line, None) <= max_cols,
-                    "line {line:?} exceeds {max_cols} cells"
+                    "line {:?} exceeds {} cells",
+                    line,
+                    max_cols
                 );
             }
         }

@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-09-07 22:25 — サイドバーワークスペース番号（GUI）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `a01a2d643` + dirty tree（sidebar番号 + 既存の mux/client/workspace 差分） |
+| toolchain | rustc 1.97.1 / cargo 1.97.1 |
+| ビルド日時 | 2026-09-07 22:11 |
+| `wezterm-gui` | `13791baa921cbac29a67ff6164a86a28b98d18f13747961dc157abd0549a0676` |
+| `wezterm` | `4dabeec3801898179de0f72972682c644860b8a97aba51bb5a101c8cde9b2712` |
+| `wezterm-mux-server` | `ad1aae3b714d3ee6f07853bea128fe94146621567faa19b5baf43936a9ef85b6` |
+| `strip-ansi-escapes` | `bc5c0b5ac092522a99c108e705c4f490fa3cb67d2f0cc95e1467be75a3bb83a6` |
+| 署名 | ad-hoc、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-09-07 22:25 |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260907-222535.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)。mux変更なし |
+
+ローカルワークスペース行の左端に、表示順の1始まり番号を付けた。`⌘1`〜`⌘9`と同じ並び。
+リモート行は番号なし。GUI PID `6063`から`49129`へ保持再起動した。
+
 ## 2026-09-07 07:55 — Even G2入力待ち要約 API 1.9.0（GUI）
 
 | 項目 | 値 |
