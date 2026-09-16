@@ -2064,6 +2064,9 @@ fn terminal_key_code(key: &str) -> Option<(KeyCode, KeyModifiers)> {
     match key {
         "up" => Some((KeyCode::UpArrow, KeyModifiers::NONE)),
         "down" => Some((KeyCode::DownArrow, KeyModifiers::NONE)),
+        // Prefer key_down(Enter) over pasting a fixed CR so CSI-u/Kitty
+        // keyboard modes still receive the encoded Enter sequence.
+        "enter" | "return" => Some((KeyCode::Enter, KeyModifiers::NONE)),
         // KeyCode has no Escape variant; it is spelled as the raw control byte
         // so the terminal can encode it for its active keyboard protocol.
         "escape" => Some((KeyCode::Char('\u{1b}'), KeyModifiers::NONE)),
@@ -3097,7 +3100,14 @@ mod tests {
             terminal_key_code("shift-tab"),
             Some((KeyCode::Tab, KeyModifiers::SHIFT))
         ));
-        assert!(terminal_key_code("enter").is_none());
+        assert!(matches!(
+            terminal_key_code("enter"),
+            Some((KeyCode::Enter, KeyModifiers::NONE))
+        ));
+        assert!(matches!(
+            terminal_key_code("return"),
+            Some((KeyCode::Enter, KeyModifiers::NONE))
+        ));
         assert!(terminal_key_code("ctrl-d").is_none());
     }
 

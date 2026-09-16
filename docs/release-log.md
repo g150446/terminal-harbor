@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-09-10 16:24 — mobile `/key` enter 対応（GUI）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `b02f55c9e` + dirty tree（`harbor_mobile.rs` enter/return） |
+| toolchain | rustc 1.97.1 / cargo 1.97.1 |
+| ビルド日時 | 2026-09-10 16:23 |
+| `wezterm-gui` | `2de0678bd15d9aeaa11543b34db63f040449c23d01f3b32e68987a558d6c9421` |
+| `wezterm` | `79890eade2abbc35b6c45a66f93313e50c2c984b4f1cd8f6244956d1e4347957` |
+| `wezterm-mux-server` | `2378734307a6801b6d5f1ad24bfb074f8a678a528d45f904c8663581c71a4841` |
+| `strip-ansi-escapes` | `e5ba85a11a22b10e02a4cf49e98e9ae7218ee2647a1e4b592ac61abdcc5a6f0d` |
+| 署名 | ad-hoc、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-09-10 16:24 |
+| 旧バンドル退避先 | `/private/tmp/Terminal-Harbor-backup-20260910-162419` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)。bridgeのみ・mux変更なし |
+
+`POST /v1/workspaces/{id}/key` で `enter` / `return` を `KeyCode::Enter` として送れるようにした。
+保持再起動後 GUI PID `99017`、bridge `*:7780` listen、`/v1/identity` version `1.9.0`。
+
 ## 2026-09-07 22:25 — サイドバーワークスペース番号（GUI）
 
 | 項目 | 値 |
