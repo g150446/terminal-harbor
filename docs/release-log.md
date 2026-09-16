@@ -6,6 +6,93 @@
 
 ---
 
+## 2026-09-15 19:10 — 生transcript一致を切り替え発話に限定（GUI）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `b02f55c9e` + dirty tree（`harbor_mobile.rs` enter/return、音声インテント3件） |
+| toolchain | rustc 1.97.1 / cargo 1.97.1 |
+| ビルド日時 | 2026-09-15 19:10 |
+| `wezterm-gui` | `438cceb7108e9c2392339b83ac16fc0caf7dfadccbaacba557b4875428102150` |
+| `wezterm` | `20f7198c27dbde3d7f30f9c87f6d8e1897f9152ef47c550546f09b14000105d5` |
+| `wezterm-mux-server` | `22028056076f4a9a2ad952183c963f370a0314ec8368bf6426f9b2a6fe6d88de` |
+| `strip-ansi-escapes` | `bc5c0b5ac092522a99c108e705c4f490fa3cb67d2f0cc95e1467be75a3bb83a6` |
+| 署名 | ad-hoc、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-09-15 19:10 |
+| 旧バンドル退避先 | `/private/tmp/Terminal-Harbor-backup-20260915-191038` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)。bridgeのみ・mux変更なし |
+
+19:03 で残していた `Err` 分岐（モデル呼び出し失敗時）の `direct` 上書きを絞り込んだ。
+`direct_switch_candidate` を追加し、生 transcript 一致を**発話がほぼワークスペース名そのもの**
+のときだけ有効にした（一致フィールドを超える文字数が `VOICE_DIRECT_MAX_EXTRA_CHARS` = 12 以内）。
+「terminal-harbor に移動」は通り、名前に言及しただけの長い指示は `not-a-switch` で落ちる。
+これで OpenRouter が落ちている間も、指示が切り替えに化けない。
+
+テスト: `direct_switch_candidate_accepts_a_name_with_a_short_switch_phrase` /
+`direct_switch_candidate_rejects_an_instruction_that_merely_names_a_workspace`
+（後者は実際に誤爆した端末送信文字列そのものを使用）。`-p wezterm-gui harbor` **79 passed**。
+
+保持再起動後 GUI PID `31328`、bridge `*:7780` listen、`server_id` は再起動前と同一。
+
+## 2026-09-15 19:03 — `unsupported` を生transcript一致で上書きしない（GUI）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `b02f55c9e` + dirty tree（`harbor_mobile.rs` enter/return、音声インテント2件） |
+| toolchain | rustc 1.97.1 / cargo 1.97.1 |
+| ビルド日時 | 2026-09-15 19:02 |
+| `wezterm-gui` | `c47903e41da23ff3f4f30d1cbc698c808716036b467cece58a3dec61e2ad991b` |
+| `wezterm` | `20f7198c27dbde3d7f30f9c87f6d8e1897f9152ef47c550546f09b14000105d5` |
+| `wezterm-mux-server` | `22028056076f4a9a2ad952183c963f370a0314ec8368bf6426f9b2a6fe6d88de` |
+| `strip-ansi-escapes` | `bc5c0b5ac092522a99c108e705c4f490fa3cb67d2f0cc95e1467be75a3bb83a6` |
+| 署名 | ad-hoc、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-09-15 19:03 |
+| 旧バンドル退避先 | `/private/tmp/Terminal-Harbor-backup-20260915-190306` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)。bridgeのみ・mux変更なし |
+
+`handle_voice_intent` は分類器が `unsupported` を返しても、生の transcript を
+`resolve_voice_workspace` にかけた結果があれば**それで上書きしてワークスペースを切り替えて**いた。
+指示文がワークスペース名に言及しているだけで一致するため（`target_score` は部分一致で加点）、
+「voice-harness-even-g2 と terminal-harbor を整理してコミットして」のような指示が
+切り替えに化け、**ユーザーが確認済みの指示が破棄される**。分類器の明示的な `unsupported` を
+最終判断とし、この上書きを廃止した。
+
+回帰テスト `voice_target_also_matches_a_name_merely_mentioned_in_an_instruction` を追加
+（生transcript一致が指示文にも当たることを固定し、上書きしてはいけない理由を残す）。
+
+**残存リスク**: モデル呼び出しが失敗する `Err` 分岐には同じ `direct` 上書きが残っている
+（「分類器が落ちていても音声でフォルダ名を言えば切り替わる」ための意図的な縮退動作）。
+OpenRouter が落ちている間は、名前を含む長い指示が切り替えに化ける可能性がある。
+
+保持再起動後 GUI PID `30861`、bridge `*:7780` listen、`/v1/identity` version `1.9.0`、
+`server_id` は再起動前と同一。
+
+## 2026-09-15 18:45 — 音声インテントの `target` 欠落でパースが落ちる問題（GUI）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `b02f55c9e` + dirty tree（`harbor_mobile.rs` enter/return、音声インテント `target` 既定値） |
+| toolchain | rustc 1.97.1 / cargo 1.97.1 |
+| ビルド日時 | 2026-09-15 18:44 |
+| `wezterm-gui` | `d5c5cb996e4497dcb9a958f4c655c2fe8d6f440483d28af9e1ffa4558e015314` |
+| `wezterm` | `20f7198c27dbde3d7f30f9c87f6d8e1897f9152ef47c550546f09b14000105d5` |
+| `wezterm-mux-server` | `22028056076f4a9a2ad952183c963f370a0314ec8368bf6426f9b2a6fe6d88de` |
+| `strip-ansi-escapes` | `bc5c0b5ac092522a99c108e705c4f490fa3cb67d2f0cc95e1467be75a3bb83a6` |
+| 署名 | ad-hoc、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-09-15 18:45 |
+| 旧バンドル退避先 | `/private/tmp/Terminal-Harbor-backup-20260915-184507` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`)。bridgeのみ・mux変更なし |
+
+`ModelVoiceIntent.target` に `#[serde(default)]` を付けた。ワークスペース切り替え以外の
+すべての要求でモデルは `{"intent":"unsupported"}` を返し `target` を省くため、非 Option の
+`String` ではパース全体が失敗し、`POST /v1/voice/intent` が `unsupported` ではなく
+`model_unavailable`（「応答を解析できません」）を返していた。
+`deepseek/deepseek-v4-flash-0731` に同一リクエストを 6 回投げて 6/6 で `target` 欠落を確認済み。
+システムプロンプトにも「unsupported のときは target を空文字にせよ」を明記した。
+
+保持再起動後 GUI PID `29877`、bridge `*:7780` listen、`/v1/identity` version `1.9.0`、
+`server_id` は再起動前と同一（セッション保持を確認）。
+
 ## 2026-09-10 16:24 — mobile `/key` enter 対応（GUI）
 
 | 項目 | 値 |

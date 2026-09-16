@@ -1459,6 +1459,10 @@ struct VoiceWorkspace {
 #[derive(Debug, Deserialize)]
 struct ModelVoiceIntent {
     intent: String,
+    /// Absent whenever the model answers `unsupported`, which is most replies.
+    /// Without a default that omission fails the whole parse and the command is
+    /// reported as an unavailable model instead of an unsupported request.
+    #[serde(default)]
     target: String,
 }
 
@@ -1586,6 +1590,7 @@ Return unsupported for every other request. When switching, set target to the ma
 workspace directory, name, or id from the list. Do not invent a workspace. Spoken Japanese \
 may match English directory names. Codex may be spoken as コーデックス and Claude as クロード. \
 Reply with JSON only: {{\"intent\":\"switch_workspace\"|\"unsupported\",\"target\":\"...\"}}. \
+Set target to an empty string when the intent is unsupported. \
 Current public workspaces: {}",
         serde_json::to_string(&candidates)?
     );
@@ -1705,6 +1710,45 @@ fn resolve_voice_workspace<'a>(
     Ok(best)
 }
 
+/// How much an utterance may exceed the workspace name it matched and still read as a
+/// switch request. "terminal-harbor に移動" is the name plus a short verb; an instruction
+/// that merely mentions the name runs far past it.
+const VOICE_DIRECT_MAX_EXTRA_CHARS: usize = 12;
+
+/// Length of the longest normalized field of `workspace` that overlaps `spoken`, capped at
+/// the utterance length so a short utterance naming part of a long directory still counts.
+fn matched_field_chars(spoken: &str, workspace: &VoiceWorkspace) -> usize {
+    let spoken_chars = spoken.chars().count();
+    [
+        workspace.id.to_string(),
+        workspace.name.clone(),
+        workspace.directory.clone(),
+        workspace.agent.clone().unwrap_or_default(),
+    ]
+    .iter()
+    .flat_map(|field| voice_field_variants(field))
+    .filter(|field| !field.is_empty() && (spoken.contains(field) || field.contains(spoken)))
+    .map(|field| field.chars().count().min(spoken_chars))
+    .max()
+    .unwrap_or(0)
+}
+
+/// The raw-transcript match, narrowed to utterances that are essentially the workspace
+/// name. [`resolve_voice_workspace`] alone also hits any instruction that happens to name
+/// a workspace, which would turn the instruction into a switch and discard it.
+fn direct_switch_candidate<'a>(
+    transcript: &str,
+    workspaces: &'a [VoiceWorkspace],
+) -> Result<&'a VoiceWorkspace, &'static str> {
+    let workspace = resolve_voice_workspace(transcript, workspaces)?;
+    let spoken = normalize_voice_target(transcript);
+    let matched = matched_field_chars(&spoken, workspace);
+    if matched == 0 || spoken.chars().count() > matched + VOICE_DIRECT_MAX_EXTRA_CHARS {
+        return Err("not-a-switch");
+    }
+    Ok(workspace)
+}
+
 fn handle_voice_intent(transcript: &str) -> anyhow::Result<String> {
     let workspaces = run_on_main(voice_workspaces)?;
     if workspaces.is_empty() {
@@ -1715,8 +1759,10 @@ fn handle_voice_intent(transcript: &str) -> anyhow::Result<String> {
         ));
     }
     // Prefer a unique directory/agent hit in the raw transcript so spoken folder
-    // names work even when the classifier is slow or returns a weak target.
-    let direct = resolve_voice_workspace(transcript, &workspaces);
+    // names work even when the classifier is slow or returns a weak target. Narrowed to
+    // utterances that are essentially the name, so an instruction that mentions a
+    // workspace is never mistaken for a request to switch to it.
+    let direct = direct_switch_candidate(transcript, &workspaces);
     let intent = match infer_voice_intent(transcript, &workspaces) {
         Ok(intent) => intent,
         Err(err) => {
@@ -1767,16 +1813,16 @@ fn handle_voice_intent(transcript: &str) -> anyhow::Result<String> {
             },
         }
     } else {
-        match direct {
-            Ok(workspace) => workspace.clone(),
-            Err(_) => {
-                return Ok(voice_result(
-                    "unsupported",
-                    "この操作はまだ対応していません",
-                    None,
-                ))
-            }
-        }
+        // An explicit `unsupported` is the classifier's confident answer, so the raw
+        // transcript match must not override it. Instructions routinely name a
+        // workspace in passing ("voice-harness-even-g2 と terminal-harbor を整理して
+        // コミットして"); switching on that silently discards the instruction the user
+        // already confirmed and moves their terminal out from under them.
+        return Ok(voice_result(
+            "unsupported",
+            "この操作はまだ対応していません",
+            None,
+        ));
     };
     let id = workspace.id.to_string();
     run_on_main(move || activate_workspace_and_focus(&id))?;
@@ -3221,6 +3267,78 @@ mod tests {
     }
 
     #[test]
+    fn direct_switch_candidate_accepts_a_name_with_a_short_switch_phrase() {
+        let workspaces = vec![
+            voice_workspace(
+                "11111111-1111-4111-8111-111111111111",
+                "one",
+                "terminal-harbor",
+                None,
+            ),
+            voice_workspace("22222222-2222-4222-8222-222222222222", "two", "Handy", None),
+        ];
+        for spoken in ["handy", "terminal-harbor", "terminal-harbor に移動"] {
+            assert_eq!(
+                direct_switch_candidate(spoken, &workspaces)
+                    .unwrap_or_else(|err| panic!("{spoken:?} rejected: {err}"))
+                    .directory,
+                if spoken == "handy" { "Handy" } else { "terminal-harbor" },
+            );
+        }
+    }
+
+    #[test]
+    fn direct_switch_candidate_rejects_an_instruction_that_merely_names_a_workspace() {
+        let workspaces = vec![
+            voice_workspace(
+                "11111111-1111-4111-8111-111111111111",
+                "one",
+                "voice-harness-even-g2",
+                None,
+            ),
+            voice_workspace(
+                "22222222-2222-4222-8222-222222222222",
+                "two",
+                "terminal-harbor",
+                None,
+            ),
+        ];
+        // The exact text the phone sent when this switched workspaces by mistake.
+        assert_eq!(
+            direct_switch_candidate(
+                "はい。両リポジトリ（voice-harness-even-g2 と terminal-harbor）を整理してコミットし、プッシュまでお願いします。",
+                &workspaces,
+            ),
+            Err("not-a-switch"),
+        );
+    }
+
+    #[test]
+    fn voice_target_also_matches_a_name_merely_mentioned_in_an_instruction() {
+        // The raw-transcript match cannot tell "switch to X" from an instruction that
+        // happens to name X, so handle_voice_intent must not let it override the
+        // classifier's explicit `unsupported`.
+        let workspaces = vec![
+            voice_workspace(
+                "11111111-1111-4111-8111-111111111111",
+                "one",
+                "terminal-harbor",
+                None,
+            ),
+            voice_workspace("22222222-2222-4222-8222-222222222222", "two", "Handy", None),
+        ];
+        assert_eq!(
+            resolve_voice_workspace(
+                "terminal-harbor のテストを整理してコミットし、プッシュまでお願いします",
+                &workspaces,
+            )
+            .unwrap()
+            .directory,
+            "terminal-harbor"
+        );
+    }
+
+    #[test]
     fn voice_target_refuses_ambiguous_or_unknown_matches() {
         let workspaces = vec![
             voice_workspace(
@@ -3282,6 +3400,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(wrapped.intent, "unsupported");
+    }
+
+    #[test]
+    fn parse_intent_content_accepts_unsupported_without_target() {
+        // Every request that is not a workspace switch comes back this way, so a
+        // missing target must read as "unsupported", not as an unavailable model.
+        let omitted = parse_intent_content(r#"{"intent":"unsupported"}"#).unwrap();
+        assert_eq!(omitted.intent, "unsupported");
+        assert_eq!(omitted.target, "");
+
+        let padded = parse_intent_content(r#" {"intent":"unsupported"} "#).unwrap();
+        assert_eq!(padded.intent, "unsupported");
+        assert_eq!(padded.target, "");
     }
 
     #[test]
