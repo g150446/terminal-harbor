@@ -98,7 +98,7 @@ Full contract: `openapi/harbor-mobile.yaml` in the mobile repo.
 | POST | `/v1/workspaces/{id}/activate` | Switch active workspace |
 | POST | `/v1/workspaces/{id}/instruction` | Body `{text, submit=true}` |
 | POST | `/v1/workspaces/{id}/key` | Send an allowlisted terminal key (`up`, `down`, `escape`, `ctrl-c`, `space`, `tab`, `shift-tab`) |
-| GET | `/v1/workspaces/{id}/screen?lines=N` | Screen mirror with plain `text` plus palette-resolved color `runs`, N=1..20000, default 60 |
+| GET | `/v1/workspaces/{id}/screen?lines=N` | Screen mirror with plain `text`, palette-resolved color `runs`, and explicit `truncated` state, N=1..20000, default 60 |
 | POST | `/v1/workspaces/{id}/g2-view` | Filtered live output or an OpenRouter waiting-state summary for Even G2 |
 | GET | `/v1/workspaces/{id}/speech/hints` | Up to 96 contextual terms for one-shot Android speech recognition |
 | POST | `/v1/voice/intent` | Authenticated. Interpret a short transcript with OpenRouter and execute only an unambiguous workspace switch |
@@ -226,14 +226,20 @@ returns `404`.
 
 ### Screen endpoint implementation
 
-Workspace id → mux workspace → window → active tab → active pane, then the
-canonical "last N lines" pattern:
+Workspace id → mux workspace → window → active tab → active pane. For GUI-side
+`ClientPane`s, the bridge awaits the mux line RPC rather than returning the
+blank cache-miss placeholders used by the asynchronous renderer. Requests
+cover the last `N` rows up to the live viewport bottom, clamped to
+`scrollback_top`, so a large enough request includes all scrollback currently
+held by the mux server:
 
 ```rust
 let dims = pane.get_dimensions();
 let bottom_row = dims.physical_top + dims.viewport_rows as isize;
-let top_row = bottom_row.saturating_sub(nlines as isize);
-let (_first_row, lines) = pane.get_lines(top_row..bottom_row);
+let top_row = bottom_row
+    .saturating_sub(nlines as isize)
+    .max(dims.scrollback_top);
+let lines = fetched_pane_lines(pane, top_row..bottom_row)?;
 // per line: styled_row_from_line trims trailing whitespace and emits color
 // runs; join_styled_rows drops the blank rows at both ends, inserts default-
 // colored newlines, and joins the rest. `text` remains the plain concatenation.
@@ -243,10 +249,14 @@ Blank rows are dropped at both ends because a full-screen program repaints by
 clearing rows, so a requested window can start with a long run of empty rows.
 Mirroring those verbatim made the mobile pane render as a blank black area
 until the reader scrolled past them. Interior blank rows are real content and
-are preserved.
+are preserved. `truncated` is true when older rows exist above the requested
+range. `alt_screen` remains independent: an alternate-screen TUI may own pages
+that have never been drawn into terminal scrollback, and the bridge does not
+send navigation keys to harvest them.
 
-Response: `{"text": ..., "lines": N, "alt_screen": bool, "foreground": "#rrggbb",
-"background": "#rrggbb", "runs": [{"n": ..., "fg": "...", "bg": "..."}, ...]}`.
+Response: `{"text": ..., "lines": N, "truncated": bool, "alt_screen": bool,
+"foreground": "#rrggbb", "background": "#rrggbb",
+"runs": [{"n": ..., "fg": "...", "bg": "..."}, ...]}`.
 `runs` cover every Unicode scalar in `text`; omitted `fg`/`bg` mean the
 defaults. Speech hints still use the plain `pane_text` path.
 All mux access goes through `run_on_main` (see below).

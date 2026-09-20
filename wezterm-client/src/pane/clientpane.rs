@@ -52,6 +52,29 @@ pub struct ClientPane {
 }
 
 impl ClientPane {
+    /// Fetch a stable row range directly from the mux server.
+    ///
+    /// `Pane::get_lines` intentionally returns placeholders on a cache miss and
+    /// schedules the actual fetch in the background. One-shot consumers that
+    /// need a complete snapshot can await this method instead.
+    pub async fn get_lines_from_mux(
+        &self,
+        lines: Range<StableRowIndex>,
+    ) -> anyhow::Result<Vec<(StableRowIndex, Line)>> {
+        let result = self
+            .client
+            .client
+            .get_lines(GetLines {
+                pane_id: self.remote_pane_id,
+                lines: vec![lines],
+            })
+            .await?;
+        let mut lines =
+            hydrate_lines(Arc::clone(&self.client), self.remote_pane_id, result.lines).await;
+        lines.sort_by_key(|(row, _)| *row);
+        Ok(lines)
+    }
+
     pub fn new(
         client: &Arc<ClientInner>,
         remote_tab_id: TabId,

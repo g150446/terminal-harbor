@@ -12,6 +12,7 @@ use http_req::request::{Method, Request};
 use http_req::uri::Uri;
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use mux::pane::CachePolicy;
+use mux::renderable::RenderableDimensions;
 use mux::Mux;
 use parking_lot::Mutex;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -30,7 +31,7 @@ use std::{fs, thread};
 use uuid::Uuid;
 use walkdir::{DirEntry, WalkDir};
 use wezterm_term::color::{ColorAttribute, ColorPalette, SrgbaTuple};
-use wezterm_term::{Intensity, KeyCode, KeyModifiers, Line};
+use wezterm_term::{Intensity, KeyCode, KeyModifiers, Line, StableRowIndex};
 use window::WindowOps;
 
 pub const DEFAULT_PORT: u16 = 7780;
@@ -1171,7 +1172,9 @@ fn dispatch(
                 .unwrap_or(60)
                 .clamp(1, 20000);
             let id = id.to_string();
-            return match run_on_main(move || screen_text(&id, lines)) {
+            return match run_on_main(move || screen_pane(&id))
+                .and_then(|pane| screen_text(&pane, lines))
+            {
                 Ok(json) => finish(200, json),
                 Err(err) => {
                     let msg = format!("{err:#}");
@@ -2550,26 +2553,68 @@ fn pane_text(pane: &std::sync::Arc<dyn mux::pane::Pane>, nlines: usize) -> Strin
     join_pane_rows(&rows)
 }
 
+fn screen_row_range(
+    dims: &RenderableDimensions,
+    nlines: usize,
+) -> (std::ops::Range<StableRowIndex>, bool) {
+    let bottom_row = dims.physical_top + dims.viewport_rows as StableRowIndex;
+    let requested_top = bottom_row.saturating_sub(nlines as StableRowIndex);
+    let top_row = requested_top.max(dims.scrollback_top);
+    (top_row..bottom_row, top_row > dims.scrollback_top)
+}
+
+fn fetched_pane_lines(
+    pane: &std::sync::Arc<dyn mux::pane::Pane>,
+    rows: std::ops::Range<StableRowIndex>,
+) -> anyhow::Result<Vec<Line>> {
+    if let Some(client_pane) = pane.downcast_ref::<wezterm_client::pane::ClientPane>() {
+        let indexed = promise::spawn::block_on(client_pane.get_lines_from_mux(rows.clone()))?;
+        if indexed.len() != rows.len()
+            || indexed
+                .iter()
+                .zip(rows.clone())
+                .any(|((actual, _), expected)| *actual != expected)
+        {
+            return Err(anyhow!(
+                "mux returned an incomplete screen snapshot for rows {}..{}",
+                rows.start,
+                rows.end
+            ));
+        }
+        return Ok(indexed.into_iter().map(|(_, line)| line).collect());
+    }
+
+    let (first_row, lines) = pane.get_lines(rows.clone());
+    if first_row != rows.start || lines.len() != rows.len() {
+        return Err(anyhow!(
+            "pane returned an incomplete screen snapshot for rows {}..{}",
+            rows.start,
+            rows.end
+        ));
+    }
+    Ok(lines)
+}
+
 fn pane_mirror(
     pane: &std::sync::Arc<dyn mux::pane::Pane>,
     nlines: usize,
-) -> (String, Vec<ColorRun>, String, String) {
+) -> anyhow::Result<(String, Vec<ColorRun>, String, String, bool)> {
     let palette = pane.palette();
     let dims = pane.get_dimensions();
-    let bottom_row = dims.physical_top + dims.viewport_rows as isize;
-    let top_row = bottom_row.saturating_sub(nlines as isize);
-    let (_first_row, lines) = pane.get_lines(top_row..bottom_row);
+    let (rows, truncated) = screen_row_range(&dims, nlines);
+    let lines = fetched_pane_lines(pane, rows)?;
     let rows: Vec<(String, Vec<ColorRun>)> = lines
         .iter()
         .map(|line| styled_row_from_line(line, &palette))
         .collect();
     let (text, runs) = join_styled_rows(&rows);
-    (
+    Ok((
         text,
         runs,
         srgba_to_hex(palette.foreground),
         srgba_to_hex(palette.background),
-    )
+        truncated,
+    ))
 }
 
 #[derive(Debug)]
@@ -2809,15 +2854,21 @@ fn g2_summary_from_model(model: ModelG2View, lines: &[String]) -> Option<G2Summa
 /// Render the last `nlines` lines of the workspace's active pane as plain
 /// text plus palette-resolved color runs so the mobile app can mirror the
 /// terminal screen.
-fn screen_text(id: &str, nlines: usize) -> anyhow::Result<String> {
+fn screen_pane(id: &str) -> anyhow::Result<std::sync::Arc<dyn mux::pane::Pane>> {
     let workspace = find_workspace(id)?;
-    let pane = workspace_active_pane(&workspace)?;
+    workspace_active_pane(&workspace)
+}
 
-    let (text, runs, foreground, background) = pane_mirror(&pane, nlines);
+fn screen_text(
+    pane: &std::sync::Arc<dyn mux::pane::Pane>,
+    nlines: usize,
+) -> anyhow::Result<String> {
+    let (text, runs, foreground, background, truncated) = pane_mirror(pane, nlines)?;
 
     Ok(serde_json::json!({
         "text": text,
         "lines": nlines,
+        "truncated": truncated,
         "alt_screen": pane.is_alt_screen_active(),
         "foreground": foreground,
         "background": background,
@@ -3010,6 +3061,30 @@ mod tests {
         let blank: Vec<String> = vec![String::new(); 4];
         assert_eq!(join_pane_rows(&blank), "");
         assert_eq!(join_pane_rows(&[]), "");
+    }
+
+    #[test]
+    fn screen_range_includes_scrollback_when_request_is_large_enough() {
+        let dims = RenderableDimensions {
+            physical_top: 120,
+            scrollback_top: -80,
+            viewport_rows: 40,
+            ..RenderableDimensions::default()
+        };
+
+        assert_eq!(screen_row_range(&dims, 500), (-80..160, false));
+    }
+
+    #[test]
+    fn screen_range_reports_line_limit_truncation() {
+        let dims = RenderableDimensions {
+            physical_top: 120,
+            scrollback_top: -80,
+            viewport_rows: 40,
+            ..RenderableDimensions::default()
+        };
+
+        assert_eq!(screen_row_range(&dims, 60), (100..160, true));
     }
 
     fn default_line(text: &str) -> Line {

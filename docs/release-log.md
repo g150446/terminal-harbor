@@ -665,3 +665,26 @@ SHA-256は署名後のバンドル内バイナリの値。`codesign`が署名を
 (`.harbor-gui-backup/`) があり、4バイナリの版が混在していた。この配置で
 同一ソースツリー由来の4バイナリに揃えた。個別上書きは
 [`maintenance.md`](maintenance.md) が禁じている。
+# 2026-09-20 16:32 — scrollback-aware mobile screen snapshots
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `4e3d2e3cf`（配置時点ではscreen取得修正と既存のG2要約・左右キー変更がdirty） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 (c980f4866 2026-06-30) |
+| ビルド日時 | 2026-09-20 16:31 JST |
+| `wezterm-gui` | `317b9993414fddec89f872df2d7d4cc2a8c686e58b8285bbf5ac9dd07024d684` |
+| `wezterm` | `070816d452ed8b75d61912bd03af58b7ad6e76ba3f3bfbe3e6b0a20f04ad5756` |
+| `wezterm-mux-server` | `6540685d23b1c0f1de4922a85a70ec7d58578be388f8b41026a3bb018f42ccf5` |
+| `strip-ansi-escapes` | `e5ba85a11a22b10e02a4cf49e98e9ae7218ee2647a1e4b592ac61abdcc5a6f0d` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、`--verify --deep --strict` 合格 |
+| 配置日時 | 2026-09-20 16:32 JST |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260920-163142.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`) |
+
+`/v1/workspaces/{id}/screen`がGUIの`ClientPane`キャッシュミス時に空行を返さず、muxの
+line RPCを待ってから応答するようにした。要求範囲は`scrollback_top`からlive bottomの
+間に制限し、古い行が要求範囲外に残る場合は`truncated: true`を返す。muxプロトコルと
+mux serverは変更していないため、配置後はセッションを維持するGUI再起動を実施した。
+再起動後の実機確認では、全workspaceに`lines=500`を要求し、最大500行の本文とcolor
+runsを取得できた。500行より古いscrollbackが残るworkspaceは`truncated: true`、全履歴が
+収まるworkspaceは`false`を返した。端末本文とworkspace識別子は検証ログへ出力していない。
