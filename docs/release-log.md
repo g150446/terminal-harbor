@@ -6,6 +6,48 @@
 
 ---
 
+## 2026-09-20 17:48 — エージェントのプランファイル取得 API 1.11.0（GUI）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `92a761ab6` + dirty tree（別作業のG2要約切り詰め、`/key`の`left`/`right`が未コミットのまま含まれる） |
+| toolchain | rustc 1.97.1 / cargo 1.97.1（`DEVELOPER_DIR=/Library/Developer/CommandLineTools`。Xcodeのライセンス未同意のためCommand Line ToolsのSDKでリンク） |
+| ビルド日時 | 2026-09-20 17:42 JST |
+| `wezterm-gui` | `fb6aed91bbd1a584605d6f187f05fa245fab05f629666ce5a229fc6ae0e32e29` |
+| `wezterm` | `f0837ffca76305a7b888fa2202e463c7a3cf36d87a53b98b0d0508c1b1b58a85` |
+| `wezterm-mux-server` | `44610c362514755c653341c5c6ea70c7cd63588bc714fb1f5be5b1906953cfcd` |
+| `strip-ansi-escapes` | `e5ba85a11a22b10e02a4cf49e98e9ae7218ee2647a1e4b592ac61abdcc5a6f0d` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-09-20 17:48 JST |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260920-174848.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`) |
+
+`GET /v1/workspaces/{id}/plan`を追加した。エージェントが自分で書いたプランファイルを
+全文返し、`/screen`へはフォールバックしない。ペインとセッションの対応はエージェントの
+hookが書く`agent-sessions/<pane id>.json`で取り、`ClientPane::remote_pane_id`で引く。
+muxプロトコルとmux serverの挙動は変えていない（`wezterm-mux-server`は`wezterm-gui-subcommands`に
+依存するため、そこへ新モジュールを足した分だけ再リンクされてハッシュが変わったが、mux側のコード経路は
+使わない。稼働中のmuxは置き換えていない）。設計と検証手順は
+[`agent-plans.md`](agent-plans.md)。
+
+雛形`assets/macos/Terminal Harbor.app`が持つトップレベルの`libEGL.dylib`、
+`libGLESv1_CM.dylib`、`libGLESv2.dylib`が残ったままだと、署名は成功してもstrict検証が
+`unsealed contents present in the bundle root`で失敗した。どのバイナリも参照していない
+ことを`otool -L`で確認し、ステージング側からだけ除去した（リポジトリの雛形は未変更）。
+
+保持再起動の前後で、GUI PIDは`51951`から`66108`へ変わり、mux PID `23379`（起動
+2026-08-28 12:39）、13ペインのペインIDとTTYは変わらなかった。新GUIがポート`7780`をlistenし、
+未認証の`/v1/identity`が`version: 1.11.0`を返した。
+
+実機で確認した範囲: 配置済みバンドルの`wezterm agent-session register|end|install-hooks`
+（一時的な`HOME`と`CLAUDE_CONFIG_DIR`を使い、実際のレジストリとClaude設定には触れていない。
+記録ファイルの権限`0600`/`0700`、別セッションIDのendで記録が残ること、Harborのペイン外での
+無音のno-op、dry-runが何も書かないこと、`--apply`のバックアップとマージ、再実行がno-opであること）。
+確認していない範囲: 認証付きの`/plan`呼び出し自体（実機の`ClientPane`経由の取得、`alt_screen`中の
+取得、同一ディレクトリの複数セッション）。認証情報を用意しなかったため、ユニットテスト
+（`harbor_plan`のパス検証・全文一致・CJK・ペイン分離）だけで検証している。Claude
+Codeへのhook導入も未実施のため、実機では`session_unidentified`が返る想定。
+
 ## 2026-09-15 19:10 — 生transcript一致を切り替え発話に限定（GUI）
 
 | 項目 | 値 |
