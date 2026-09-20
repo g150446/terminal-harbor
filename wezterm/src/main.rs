@@ -19,6 +19,7 @@ use wezterm_gui_subcommands::*;
 
 mod asciicast;
 mod cli;
+mod harbor_agent_hooks;
 mod harbor_restart;
 
 //    let message = "; ❤ 😍🤢\n\x1b[91;mw00t\n\x1b[37;104;m bleet\x1b[0;m.";
@@ -136,6 +137,12 @@ enum SubCommand {
         about = "Update Terminal Harbor workspace metadata"
     )]
     Workspace(WorkspaceCommand),
+
+    #[command(
+        name = "agent-session",
+        about = "Register the agent session running in this pane (for agent hooks)"
+    )]
+    AgentSession(harbor_agent_hooks::AgentSessionCommand),
 
     #[command(name = "restart", about = "Restart Terminal Harbor")]
     Restart(harbor_restart::RestartCommand),
@@ -854,6 +861,7 @@ fn run() -> anyhow::Result<()> {
         SubCommand::ImageCat(cmd) => cmd.run(),
         SubCommand::SetCwd(cmd) => cmd.run(),
         SubCommand::Workspace(cmd) => cmd.run(),
+        SubCommand::AgentSession(cmd) => cmd.run(),
         SubCommand::Restart(cmd) => {
             init_config(&opts)?;
             cmd.run()

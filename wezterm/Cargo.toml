@@ -28,6 +28,7 @@ portable-pty.workspace = true
 promise.workspace  =true
 procinfo.workspace = true
 serde.workspace = true
+dirs-next.workspace = true
 serde_json.workspace = true
 shell-words.workspace = true
 smol.workspace = true

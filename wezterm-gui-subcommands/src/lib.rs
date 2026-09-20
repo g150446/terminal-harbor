@@ -4,6 +4,8 @@ use config::{GuiPosition, SshParameters};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+pub mod harbor_agent_session;
+
 pub const DEFAULT_WINDOW_CLASS: &str = "org.wezfurlong.wezterm";
 pub const HARBOR_PERSISTENT_DOMAIN: &str = "terminal-harbor";
 

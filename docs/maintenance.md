@@ -148,6 +148,12 @@ macOSの永続状態は通常
 `~/Library/Application Support/terminal-harbor/mobile-devices.json`にあります。
 ここにはstable `server_id`、client ID、長期secretが含まれるため、秘密情報として
 扱います。Harbor同士のペアは同じディレクトリの`paired-desktops.json`に保存します。
+エージェントのプラン取得用に、同じディレクトリの`agent-sessions/<pane id>.json`へ
+ペインごとのセッション記録（session ID、transcript path、cwd）を保存します。
+これらはAPI応答やログへ出さないローカル状態です。mux再起動でペインIDが再利用される
+ため、muxの起動より古い記録は`stale_session`として扱われ、削除しても次のhook実行で
+再作成されます。hookの導入は任意で、手順とロールバックは
+[`agent-plans.md`](agent-plans.md)を参照してください。
 内容、バックアップ、QR、pair URIをログ、issue、スクリーンショット、
 コミットへ含めないでください。状態ファイルの削除や再生成はserver identityを変え、
 既存クライアントの再pairingが必要になるため、通常の障害対応では行いません。
@@ -273,6 +279,9 @@ GUIだけを戻せば安全とは限りません。muxまたはプロトコル�
 | `wezterm-gui/src/harbor_restart.rs` | GUI側制御ソケット、再起動準備、通常終了時のmux停止 |
 | `wezterm/src/harbor_restart.rs` | CLI、互換性検査、再起動ヘルパー、セッション再起動 |
 | `wezterm-gui-subcommands/src/lib.rs` | ソケット・PIDパスとドメイン名 |
+| `wezterm-gui-subcommands/src/harbor_agent_session.rs` | エージェントセッションとペインの対応記録（hook CLIとGUIで共有） |
+| `wezterm/src/harbor_agent_hooks.rs` | `wezterm agent-session`（hook用登録・解除とhookの任意インストール） |
+| `wezterm-gui/src/harbor_plan.rs` | `/v1/workspaces/{id}/plan`のプラン取得とパス検証 |
 | `wezterm-gui/src/main.rs` | 永続muxドメインの登録と制御サーバー起動 |
 | `wezterm-mux-server/src/main.rs` | Terminal Harbor専用セッションホスト |
 | `wezterm-mux-server/src/daemonize.rs` | 専用PIDファイルとdaemon化 |

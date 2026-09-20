@@ -196,6 +196,19 @@ pub fn pane_process_name(
         })
 }
 
+/// The agent running in a pane: an explicit `TH_AGENT_NAME` (any name, used
+/// verbatim) wins; otherwise only a recognized AI agent process counts.
+pub fn pane_agent_label(
+    vars: &std::collections::HashMap<String, String>,
+    pane_process: Option<&str>,
+) -> Option<String> {
+    vars.get("TH_AGENT_NAME")
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .or_else(|| pane_process.and_then(agent_label).map(str::to_string))
+}
+
 pub fn agent_label(raw: &str) -> Option<&'static str> {
     let name = raw.trim().to_ascii_lowercase();
     let name = name.strip_suffix(".exe").unwrap_or(&name);
@@ -849,17 +862,7 @@ pub fn rows() -> Vec<HarborWorkspaceRow> {
                             // An explicit TH_AGENT_NAME wins and may be any
                             // agent; otherwise only a recognized AI agent
                             // counts as running.
-                            let label = vars
-                                .get("TH_AGENT_NAME")
-                                .map(|name| name.trim())
-                                .filter(|name| !name.is_empty())
-                                .map(str::to_string)
-                                .or_else(|| {
-                                    pane_process
-                                        .as_deref()
-                                        .and_then(agent_label)
-                                        .map(str::to_string)
-                                });
+                            let label = pane_agent_label(&vars, pane_process.as_deref());
                             if let Some(label) = label {
                                 let summary = vars
                                     .get("TH_AGENT_MESSAGE")
@@ -918,6 +921,27 @@ mod tests {
         assert_eq!(
             KNOWN_AGENTS.iter().map(|(exe, _)| *exe).collect::<Vec<_>>(),
             wezterm_mux_server_impl::sessionhandler::AGENT_PROCESS_NAMES.to_vec()
+        );
+    }
+
+    #[test]
+    fn pane_agent_label_prefers_the_explicit_name_over_the_process() {
+        let mut vars = std::collections::HashMap::new();
+        assert_eq!(
+            pane_agent_label(&vars, Some("claude")).as_deref(),
+            Some("Claude")
+        );
+        assert_eq!(pane_agent_label(&vars, Some("zsh")), None);
+        assert_eq!(pane_agent_label(&vars, None), None);
+        vars.insert("TH_AGENT_NAME".to_string(), " my-agent ".to_string());
+        assert_eq!(
+            pane_agent_label(&vars, Some("claude")).as_deref(),
+            Some("my-agent")
+        );
+        vars.insert("TH_AGENT_NAME".to_string(), "  ".to_string());
+        assert_eq!(
+            pane_agent_label(&vars, Some("codex")).as_deref(),
+            Some("Codex")
         );
     }
 

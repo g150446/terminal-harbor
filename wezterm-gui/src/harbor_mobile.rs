@@ -1,5 +1,6 @@
 //! Local LAN bridge for Terminal Harbor Mobile (QR pairing + REST API).
 
+use crate::harbor_plan;
 use crate::harbor_workspace::{self, WorkspaceActivity};
 use crate::termwindow::TermWindowNotif;
 use anyhow::{anyhow, Context};
@@ -36,7 +37,7 @@ use window::WindowOps;
 
 pub const DEFAULT_PORT: u16 = 7780;
 const PAIR_TOKEN_TTL: Duration = Duration::from_secs(5 * 60);
-const API_VERSION: &str = "1.9.0";
+const API_VERSION: &str = "1.11.0";
 pub(crate) const AUTH_VERSION: &str = "hmac-sha256-v1";
 const AUTH_CLOCK_SKEW_SECS: u64 = 5 * 60;
 const REPLAY_TTL_SECS: u64 = 10 * 60;
@@ -1164,6 +1165,29 @@ fn dispatch(
 
     if let Some(id) = path
         .strip_prefix("/v1/workspaces/")
+        .and_then(|rest| rest.strip_suffix("/plan"))
+    {
+        if method == "GET" {
+            let id = id.to_string();
+            // No fallback to /screen when the plan is unavailable: a screen
+            // snapshot is not the agent's plan and must be requested (and
+            // labelled) by the caller.
+            return match run_on_main(move || plan_target(&id)).and_then(|target| {
+                harbor_plan::resolve(
+                    &target.workspace_id,
+                    target.agent.as_deref(),
+                    target.pane_id,
+                    &harbor_plan::PlanEnv::from_system(),
+                )
+            }) {
+                Ok(reply) => finish(reply.status, reply.body),
+                Err(err) => workspace_error(err),
+            };
+        }
+    }
+
+    if let Some(id) = path
+        .strip_prefix("/v1/workspaces/")
         .and_then(|rest| rest.strip_suffix("/screen"))
     {
         if method == "GET" {
@@ -2092,6 +2116,32 @@ fn workspace_active_pane(
         }
     }
     target.ok_or_else(|| anyhow!("workspace not found or has no panes"))
+}
+
+struct PlanTarget {
+    workspace_id: String,
+    agent: Option<String>,
+    /// The mux server's pane id, which is what an agent's hook sees in
+    /// `WEZTERM_PANE` and therefore what the session registry is keyed by.
+    pane_id: u64,
+}
+
+/// Identify the agent and registry key for the pane `/screen` would mirror, so
+/// the two endpoints always describe the same pane.
+fn plan_target(id: &str) -> anyhow::Result<PlanTarget> {
+    let workspace = find_workspace(id)?;
+    let pane = workspace_active_pane(&workspace)?;
+    let vars = pane.copy_user_vars();
+    let process = harbor_workspace::pane_process_name(&pane, &vars);
+    let pane_id = match pane.downcast_ref::<wezterm_client::pane::ClientPane>() {
+        Some(client_pane) => client_pane.remote_pane_id,
+        None => pane.pane_id(),
+    };
+    Ok(PlanTarget {
+        workspace_id: workspace.id.to_string(),
+        agent: harbor_workspace::pane_agent_label(&vars, process.as_deref()),
+        pane_id: pane_id as u64,
+    })
 }
 
 fn send_instruction(id: &str, text: &str, submit: bool) -> anyhow::Result<()> {

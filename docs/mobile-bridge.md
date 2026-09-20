@@ -99,6 +99,7 @@ Full contract: `openapi/harbor-mobile.yaml` in the mobile repo.
 | POST | `/v1/workspaces/{id}/instruction` | Body `{text, submit=true}` |
 | POST | `/v1/workspaces/{id}/key` | Send an allowlisted terminal key (`up`, `down`, `escape`, `ctrl-c`, `space`, `tab`, `shift-tab`) |
 | GET | `/v1/workspaces/{id}/screen?lines=N` | Screen mirror with plain `text`, palette-resolved color `runs`, and explicit `truncated` state, N=1..20000, default 60 |
+| GET | `/v1/workspaces/{id}/plan` | The agent's exact plan file, read whole and never screen-derived; `available: false` with a `reason` when there is none (see [`agent-plans.md`](agent-plans.md)) |
 | POST | `/v1/workspaces/{id}/g2-view` | Filtered live output or an OpenRouter waiting-state summary for Even G2 |
 | GET | `/v1/workspaces/{id}/speech/hints` | Up to 96 contextual terms for one-shot Android speech recognition |
 | POST | `/v1/voice/intent` | Authenticated. Interpret a short transcript with OpenRouter and execute only an unambiguous workspace switch |
@@ -224,6 +225,14 @@ seconds. Screen contents, prompts, model responses, and summaries are never
 logged or persisted. Clients should fall back to `/screen` when an older bridge
 returns `404`.
 
+API version 1.11.0 adds authenticated `GET /v1/workspaces/{id}/plan`, which
+returns the plan file written by the agent in the workspace's active pane. It is
+independent of `/screen`: it reads no terminal rows, sends no keys, and does not
+fall back to `/screen` when no plan is available. Clients that need a screen
+snapshot in that case must call `/screen` and present it as one. Older bridges
+answer `404`. The full contract, session matching, and hook setup are in
+[`agent-plans.md`](agent-plans.md).
+
 ### Screen endpoint implementation
 
 Workspace id → mux workspace → window → active tab → active pane. For GUI-side
@@ -312,6 +321,9 @@ then `window.set_window_position(ScreenPoint)` is applied post-creation.
 |---|---|
 | `wezterm-gui/src/harbor_mobile.rs` | Bridge server, token persistence, identity metadata, endpoints, and QR PNG |
 | `wezterm-gui/src/harbor_peer.rs` | HMAC client used by another Harbor to call this bridge |
+| `wezterm-gui/src/harbor_plan.rs` | `/plan` resolver: provider interface, Claude plan-file lookup and path validation |
+| `wezterm-gui-subcommands/src/harbor_agent_session.rs` | Per-pane agent session records shared by the hook CLI and the GUI |
+| `wezterm/src/harbor_agent_hooks.rs` | `wezterm agent-session` hook commands and the opt-in hook installer |
 | `wezterm-gui/src/overlay/harbor_remote.rs` | Remote workspace overlay (screen poll, instruction, allowlisted keys) |
 | `wezterm-gui/src/termwindow/harbor_sidebar.rs` | Pairing panel UI (buttons: Open QR / Copy URI / New QR / Pair another Harbor) |
 | `wezterm-gui/src/termwindow/mouseevent.rs` | `UIItemType` handlers; toggle-on also opens QR + copies URI |

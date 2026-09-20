@@ -6904,6 +6904,7 @@ dependencies = [
  "clap_complete_fig",
  "codec",
  "config",
+ "dirs-next",
  "embed-resource",
  "env-bootstrap",
  "filedescriptor",
@@ -7234,6 +7235,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "config",
+ "dirs-next",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
