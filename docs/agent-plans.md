@@ -131,6 +131,13 @@ Implement `PlanProvider` in `wezterm-gui/src/harbor_plan.rs` and select it in
 `resolve()`. Codex has no provider on purpose: it has no dedicated plan file,
 and reconstructing a plan from its session log or the screen is not done.
 
+## The conversation, not the plan
+
+The same hook registration also backs
+`GET /v1/workspaces/{id}/transcript`, which returns the exchange between the
+person and the agent rather than the plan file. Installing the hooks once serves
+both. See [`agent-transcripts.md`](agent-transcripts.md).
+
 ## Enabling the hooks (opt-in)
 
 Nothing changes in the agent's configuration unless you ask. From the installed

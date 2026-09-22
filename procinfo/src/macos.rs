@@ -3,6 +3,60 @@ use super::*;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
+/// `struct proc_fileinfo` from `sys/proc_info.h`, which libc does not expose.
+/// Only its size and position matter here: it precedes the path we want.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ProcFileInfo {
+    fi_openflags: u32,
+    fi_status: u32,
+    fi_offset: libc::off_t,
+    fi_type: i32,
+    fi_guardflags: u32,
+}
+
+/// `struct vnode_fdinfowithpath` from `sys/proc_info.h`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct VnodeFdInfoWithPath {
+    pfi: ProcFileInfo,
+    pvip: libc::vnode_info_path,
+}
+
+const PROC_PIDFDVNODEPATHINFO: libc::c_int = 2;
+
+/// The path behind one vnode descriptor, or None when it cannot be resolved
+/// (closed since the descriptor table was read, or not a named file).
+fn fd_path(pid: u32, fd: i32) -> Option<PathBuf> {
+    let mut info: VnodeFdInfoWithPath = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of_val(&info) as libc::c_int;
+    let ret = unsafe {
+        libc::proc_pidfdinfo(
+            pid as _,
+            fd,
+            PROC_PIDFDVNODEPATHINFO,
+            &mut info as *mut _ as *mut _,
+            size,
+        )
+    };
+    if ret != size {
+        return None;
+    }
+    // Same libc workaround as current_working_dir: vip_path is really
+    // [c_char; MAXPATHLEN], declared as a nested array.
+    let path = unsafe {
+        std::slice::from_raw_parts(
+            info.pvip.vip_path.as_ptr() as *const u8,
+            libc::MAXPATHLEN as usize,
+        )
+    };
+    let nul = path.iter().position(|&c| c == 0)?;
+    if nul == 0 {
+        return None;
+    }
+    Some(OsStr::from_bytes(&path[0..nul]).into())
+}
+
 impl From<u32> for LocalProcessStatus {
     fn from(s: u32) -> Self {
         match s {
@@ -46,6 +100,45 @@ impl LocalProcessInfo {
         };
         let nul = vip_path.iter().position(|&c| c == 0)?;
         Some(OsStr::from_bytes(&vip_path[0..nul]).into())
+    }
+
+    /// Regular files the process currently has open, by path.
+    ///
+    /// `PROC_PIDLISTFDS` gives the descriptor table; each vnode descriptor is
+    /// then resolved to a path with `PROC_PIDFDVNODEPATHINFO`. Descriptors that
+    /// cannot be resolved are skipped: the table can change between the two
+    /// calls, and a process we may not inspect simply yields nothing.
+    pub fn open_files(pid: u32) -> Vec<PathBuf> {
+        // Size the buffer from a first call, then re-read. A process opening
+        // files between the two calls just means we see a few less.
+        let needed = unsafe {
+            libc::proc_pidinfo(pid as _, libc::PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0)
+        };
+        if needed <= 0 {
+            return Vec::new();
+        }
+        let count = needed as usize / std::mem::size_of::<libc::proc_fdinfo>();
+        let mut fds: Vec<libc::proc_fdinfo> = vec![unsafe { std::mem::zeroed() }; count];
+        let size = (count * std::mem::size_of::<libc::proc_fdinfo>()) as libc::c_int;
+        let ret = unsafe {
+            libc::proc_pidinfo(
+                pid as _,
+                libc::PROC_PIDLISTFDS,
+                0,
+                fds.as_mut_ptr() as *mut _,
+                size,
+            )
+        };
+        if ret <= 0 {
+            return Vec::new();
+        }
+        let got = ret as usize / std::mem::size_of::<libc::proc_fdinfo>();
+        fds.truncate(got.min(count));
+
+        fds.iter()
+            .filter(|fd| fd.proc_fdtype as libc::c_int == libc::PROX_FDTYPE_VNODE)
+            .filter_map(|fd| fd_path(pid, fd.proc_fd))
+            .collect()
     }
 
     /// The name the process was invoked as, taken from `argv[0]`.
@@ -354,5 +447,31 @@ mod tests {
     fn command_name_is_absent_for_a_pid_that_does_not_exist() {
         // Pid 0 is the kernel and has no argv to read.
         assert_eq!(LocalProcessInfo::command_name(0), None);
+    }
+
+    /// Checks the hand-written `vnode_fdinfowithpath` layout against the real
+    /// kernel: a wrong offset would return garbage paths rather than fail, and
+    /// this test is the only thing standing between that and a silent bug.
+    #[test]
+    fn open_files_finds_a_file_this_process_holds_open() {
+        let dir = std::env::temp_dir().join(format!("procinfo-open-files-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("held-open.txt");
+        let file = std::fs::File::create(&path).expect("create");
+        let expected = path.canonicalize().expect("canonicalize");
+
+        let open = LocalProcessInfo::open_files(std::process::id());
+
+        drop(file);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            open.contains(&expected),
+            "{expected:?} missing from {open:?}"
+        );
+    }
+
+    #[test]
+    fn open_files_is_empty_for_a_pid_that_does_not_exist() {
+        assert!(LocalProcessInfo::open_files(0).is_empty());
     }
 }

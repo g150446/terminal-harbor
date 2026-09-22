@@ -6,7 +6,60 @@
 
 ---
 
-## 2026-09-20 17:48 — エージェントのプランファイル取得 API 1.11.0（GUI）
+## 2026-09-23 07:44 — エージェント会話取得 API 1.12.0（GUI）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `74330dda4` + dirty tree（本変更に加え、別作業のG2要約切り詰めと`/key`の`left`/`right`が未コミットのまま含まれる） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 (c980f4866 2026-06-30)。前回と違い Xcode のライセンスに同意済みのため、Command Line Tools ではなく Xcode の SDK でリンクしている |
+| ビルド日時 | 2026-09-23 07:44 JST |
+| `wezterm-gui` | `76d9db9f08632dce02450eb77dfffa8ba75ef42768025ba4a185bf67fed48e58` |
+| `wezterm` | `b99196ebc8b9cb571e57772aee890ddac381a62b41a0177317d222ba949446cd` |
+| `wezterm-mux-server` | `79023fcbe1953ccc30d1ac83c140ec98a26bce2857d2ad8bcf417178eed40bee` |
+| `strip-ansi-escapes` | `e5ba85a11a22b10e02a4cf49e98e9ae7218ee2647a1e4b592ac61abdcc5a6f0d` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-09-23 07:44 JST |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260923-073748.app`（同日 07:37 の初回配置分は `/private/tmp/th-old-swap.app`、その差し替え分は `/private/tmp/th-old-swap2.app`） |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`) |
+
+`GET /v1/workspaces/{id}/transcript` を追加した。エージェント自身のセッションログから、
+人の指示とエージェントの返答だけを返す。**AIエージェントのTUIは画面を描き直すため、
+端末のスクロールバックに履歴が残らない**（実測: 同じ`lines=20000`でzshのペインが7,330行
+返すのに対し、Claude Codeのペインは30行で`truncated: false`）。`/screen`では返答から
+その指示まで遡れないという、行数では解決しない制約への対処。ツール呼び出し・ツール出力・
+思考・注入された文脈は落とす。ページングは追記専用ログのバイト位置を不透明カーソルにした
+もので、パスやセッションidは応答にもエラーにも出さない。設計と検証手順は
+[`agent-transcripts.md`](agent-transcripts.md)。
+
+Codexは登録hookを持たないため、ペインのフォアグラウンドプロセスが開いている
+`<codex home>/sessions/**/rollout-*.jsonl`でセッションを特定する（`procinfo`に
+`PROC_PIDLISTFDS` / `PROC_PIDFDVNODEPATHINFO` を使う`open_files`を追加）。cwdと時刻からの
+推測はせず、候補0で`session_unidentified`、複数で`ambiguous_session`を返す。手書きの
+`vnode_fdinfowithpath`レイアウトは、自プロセスが開いたファイルを検出できるかを見る
+ユニットテストで実カーネルに対して検証している。
+
+あわせて、ペインのエージェント判定に登録レコードへのフォールバックを足した
+(`harbor_workspace::registered_agent_label`)。**保持再起動の直後、新GUIはユーザー変数を
+持たず、再exec済みエージェントの実行ファイル名はバージョン文字列になるため、
+エージェントのペインが「エージェントなし」と判定される**。この配置の1回目
+(07:37) の直後に実測で確認しており、`/plan`（本変更前からのコード）も同じく
+`no_agent`を返していた。判定はまず従来どおりプロセス検出、取れなければ
+そのペインのhook登録を根拠にする。古い登録は従来どおり読み取り側で`stale_session`
+として弾く。
+
+muxは再起動していない（ソケットのmtimeは2026-08-28 12:39のまま）。保持再起動後、
+6ペインのペインIDは変わらなかった。なお本作業の開始時点では7ペインあり、うち1つ
+（`harbor/terminal-harbor`のClaude Codeセッション、ペイン2）が配置後の一覧から消えている。
+そのペインの登録レコードもレジストリから消えており、これはSessionEnd hookが
+セッション終了時に行う動作。配置がその終了を引き起こしたかどうかは確認できていない。
+
+実機で確認した範囲（HMAC署名付き、Claude Codeのペインに対して）: 会話の取得、
+`limit`のクランプ（1と9999）、8ページ40件を`next_before`で遡って重複・欠落・順序の破綻が
+ないこと、応答本文に`/Users/...`・`.jsonl`・セッションidが現れないこと、シェルのペインが
+`no_agent`、範囲外および不正なカーソルが`stale_cursor`を返すこと、そして**このセッションの
+返答から、それを生成したユーザーの指示まで遡り着けること**（60件・2ページ）。
+確認していない範囲: Codexのペインでの実取得と`ambiguous_session`（配置時点で稼働中の
+Codexセッションが無かったため、ユニットテストのみ）。
 
 | 項目 | 値 |
 | --- | --- |

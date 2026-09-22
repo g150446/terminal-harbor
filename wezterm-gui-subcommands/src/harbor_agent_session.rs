@@ -2,11 +2,15 @@
 //!
 //! An agent's own hook (`wezterm agent-session register`) writes one small
 //! file per pane; the GUI reads it back when the mobile bridge is asked for the
-//! agent's plan. One file per pane keeps concurrent hooks from racing on a
-//! shared read-modify-write, and the write is atomic (temp file + rename).
+//! agent's plan or conversation. One file per pane keeps concurrent hooks from
+//! racing on a shared read-modify-write, and the write is atomic (temp file +
+//! rename).
 //!
-//! The records hold a transcript path and a working directory, so they are
-//! local state only: nothing here is ever serialized into an API response.
+//! A record is local state: the transcript path, working directory and session
+//! id it holds are never serialized into an API response. `/transcript` serves
+//! the *contents* of the transcript a record points at, which is what that
+//! caller asked for; the record's own fields stay here (see
+//! docs/agent-transcripts.md).
 
 use serde::{Deserialize, Serialize};
 use std::fs;

@@ -1,8 +1,8 @@
 //! Local LAN bridge for Terminal Harbor Mobile (QR pairing + REST API).
 
-use crate::harbor_plan;
 use crate::harbor_workspace::{self, WorkspaceActivity};
 use crate::termwindow::TermWindowNotif;
+use crate::{harbor_plan, harbor_transcript};
 use anyhow::{anyhow, Context};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -37,7 +37,7 @@ use window::WindowOps;
 
 pub const DEFAULT_PORT: u16 = 7780;
 const PAIR_TOKEN_TTL: Duration = Duration::from_secs(5 * 60);
-const API_VERSION: &str = "1.11.0";
+const API_VERSION: &str = "1.12.0";
 pub(crate) const AUTH_VERSION: &str = "hmac-sha256-v1";
 const AUTH_CLOCK_SKEW_SECS: u64 = 5 * 60;
 const REPLAY_TTL_SECS: u64 = 10 * 60;
@@ -47,6 +47,12 @@ const G2_CONTEXT_LINES: usize = 2_000;
 const G2_CONTEXT_MAX_BYTES: usize = 64 * 1_024;
 const G2_STABLE_FOR: Duration = Duration::from_secs(2);
 const G2_MODEL_RETRY_AFTER: Duration = Duration::from_secs(30);
+// Safety-valve cap only; the model is already instructed to keep summaries to
+// "about two small glasses screens". A summary this long has ignored that
+// instruction, so we still cut it, but visibly and on a sentence boundary
+// instead of silently mid-word (see truncate_g2_summary).
+const G2_SUMMARY_MAX_CHARS: usize = 3_600;
+const G2_SUMMARY_TRUNCATION_MARK: &str = "…（省略。続きはTerminal Harborの画面で確認してください）";
 
 fn new_client_id() -> String {
     Uuid::new_v4().to_string()
@@ -1188,6 +1194,39 @@ fn dispatch(
 
     if let Some(id) = path
         .strip_prefix("/v1/workspaces/")
+        .and_then(|rest| rest.strip_suffix("/transcript"))
+    {
+        if method == "GET" {
+            let limit = query_param(query, "limit")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(harbor_transcript::DEFAULT_LIMIT)
+                .clamp(1, harbor_transcript::MAX_LIMIT);
+            let before = query_param(query, "before").map(|v| v.to_string());
+            let id = id.to_string();
+            // As with /plan, an unavailable conversation is never answered with
+            // screen rows: the screen holds one repaint of the agent's UI, not
+            // the exchange the caller asked for.
+            return match run_on_main(move || plan_target(&id)).and_then(|target| {
+                harbor_transcript::resolve(
+                    &target.workspace_id,
+                    target.agent.as_deref(),
+                    &harbor_transcript::Target {
+                        pane_id: target.pane_id,
+                        process_pid: target.process_pid,
+                    },
+                    limit,
+                    before.as_deref(),
+                    &harbor_transcript::TranscriptEnv::from_system(),
+                )
+            }) {
+                Ok(reply) => finish(reply.status, reply.body),
+                Err(err) => workspace_error(err),
+            };
+        }
+    }
+
+    if let Some(id) = path
+        .strip_prefix("/v1/workspaces/")
         .and_then(|rest| rest.strip_suffix("/screen"))
     {
         if method == "GET" {
@@ -2124,6 +2163,10 @@ struct PlanTarget {
     /// The mux server's pane id, which is what an agent's hook sees in
     /// `WEZTERM_PANE` and therefore what the session registry is keyed by.
     pane_id: u64,
+    /// The pane's foreground process, for agents that register nothing and can
+    /// only be identified by the session log they are writing. The mux runs on
+    /// this machine, so its pid is one we can inspect.
+    process_pid: Option<u32>,
 }
 
 /// Identify the agent and registry key for the pane `/screen` would mirror, so
@@ -2137,10 +2180,23 @@ fn plan_target(id: &str) -> anyhow::Result<PlanTarget> {
         Some(client_pane) => client_pane.remote_pane_id,
         None => pane.pane_id(),
     };
+    let pane_id = pane_id as u64;
     Ok(PlanTarget {
         workspace_id: workspace.id.to_string(),
-        agent: harbor_workspace::pane_agent_label(&vars, process.as_deref()),
-        pane_id: pane_id as u64,
+        // Detection first, then the pane's own registration: after a
+        // session-preserving restart the GUI cannot see an agent process, and
+        // answering "no agent" for a pane an agent registered itself in is
+        // wrong in a way the caller cannot tell from a genuine shell.
+        agent: harbor_workspace::pane_agent_label(&vars, process.as_deref()).or_else(|| {
+            harbor_workspace::registered_agent_label(
+                &wezterm_gui_subcommands::harbor_agent_session::default_registry_dir(),
+                pane_id,
+            )
+        }),
+        pane_id,
+        process_pid: pane
+            .get_foreground_process_info(CachePolicy::AllowStale)
+            .map(|info| info.pid),
     })
 }
 
@@ -2161,6 +2217,8 @@ fn send_instruction(id: &str, text: &str, submit: bool) -> anyhow::Result<()> {
 
 fn terminal_key_code(key: &str) -> Option<(KeyCode, KeyModifiers)> {
     match key {
+        "left" => Some((KeyCode::LeftArrow, KeyModifiers::NONE)),
+        "right" => Some((KeyCode::RightArrow, KeyModifiers::NONE)),
         "up" => Some((KeyCode::UpArrow, KeyModifiers::NONE)),
         "down" => Some((KeyCode::DownArrow, KeyModifiers::NONE)),
         // Prefer key_down(Enter) over pasting a fixed CR so CSI-u/Kitty
@@ -2835,7 +2893,7 @@ copy those lines verbatim. Use only valid line numbers. Reply with JSON only: \
         "model": settings.model,
         "stream": false,
         "temperature": 0,
-        "max_tokens": 900,
+        "max_tokens": 2_000,
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": system},
@@ -2884,11 +2942,36 @@ fn selected_g2_lines(indices: &[usize], lines: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Cuts `summary` to at most `G2_SUMMARY_MAX_CHARS` characters if needed.
+///
+/// A silent mid-sentence cut reads as a bug (the previous behavior: a plain
+/// `.chars().take(1_200)` with no indication anything was omitted). When a
+/// cut is unavoidable, prefer the last sentence boundary within the trailing
+/// `lookback` characters of the cut point, and always append a visible
+/// marker so the reader knows the text was shortened.
+fn truncate_g2_summary(summary: &str) -> String {
+    let chars: Vec<char> = summary.chars().collect();
+    if chars.len() <= G2_SUMMARY_MAX_CHARS {
+        return summary.to_string();
+    }
+    const LOOKBACK: usize = 200;
+    let hard_cut = &chars[..G2_SUMMARY_MAX_CHARS];
+    let lookback_start = hard_cut.len().saturating_sub(LOOKBACK);
+    let boundary = hard_cut[lookback_start..]
+        .iter()
+        .rposition(|ch| matches!(ch, '。' | '\n' | '!' | '?' | '！' | '？'))
+        .map(|rel| lookback_start + rel + 1);
+    let cut_len = boundary.unwrap_or(hard_cut.len());
+    let mut result: String = hard_cut[..cut_len].iter().collect();
+    result.push_str(G2_SUMMARY_TRUNCATION_MARK);
+    result
+}
+
 fn g2_summary_from_model(model: ModelG2View, lines: &[String]) -> Option<G2SummaryView> {
     if !model.waiting_for_user {
         return None;
     }
-    let summary = model.summary.trim().chars().take(1_200).collect::<String>();
+    let summary = truncate_g2_summary(model.summary.trim());
     let question = selected_g2_lines(&model.question_lines, lines).join("\n");
     let options = selected_g2_lines(&model.option_lines, lines);
     if summary.is_empty() && question.is_empty() && options.is_empty() {
@@ -3244,6 +3327,14 @@ mod tests {
     #[test]
     fn terminal_navigation_keys_are_explicitly_limited() {
         assert!(matches!(
+            terminal_key_code("left"),
+            Some((KeyCode::LeftArrow, KeyModifiers::NONE))
+        ));
+        assert!(matches!(
+            terminal_key_code("right"),
+            Some((KeyCode::RightArrow, KeyModifiers::NONE))
+        ));
+        assert!(matches!(
             terminal_key_code("up"),
             Some((KeyCode::UpArrow, KeyModifiers::NONE))
         ));
@@ -3555,6 +3646,62 @@ mod tests {
         let tail = tail_utf8_bytes(text, 7);
         assert_eq!(tail, "後半");
         assert!(tail.is_char_boundary(0));
+    }
+
+    #[test]
+    fn g2_summary_under_limit_is_unchanged() {
+        let summary = "テストまで完了。コミットして良いですか？";
+        assert_eq!(truncate_g2_summary(summary), summary);
+    }
+
+    #[test]
+    fn g2_summary_over_limit_cuts_at_sentence_boundary_with_visible_marker() {
+        // One short sentence near the cut point, then filler with no more
+        // punctuation until well past G2_SUMMARY_MAX_CHARS.
+        let head = "最初の結果です。";
+        let filler: String = std::iter::repeat('あ').take(G2_SUMMARY_MAX_CHARS + 500).collect();
+        let summary = format!("{head}{filler}");
+        let truncated = truncate_g2_summary(&summary);
+
+        assert!(
+            truncated.starts_with(head),
+            "should keep the leading sentence intact"
+        );
+        assert!(
+            truncated.ends_with(G2_SUMMARY_TRUNCATION_MARK),
+            "must visibly mark that content was omitted, not cut silently"
+        );
+        assert!(
+            truncated.chars().count() < summary.chars().count(),
+            "truncated output must actually be shorter than the input"
+        );
+    }
+
+    #[test]
+    fn g2_summary_without_nearby_boundary_still_marks_truncation() {
+        // No sentence-ending punctuation anywhere, so no boundary exists
+        // within the lookback window; must still hard-cut safely and mark it.
+        let summary: String = std::iter::repeat('あ').take(G2_SUMMARY_MAX_CHARS + 500).collect();
+        let truncated = truncate_g2_summary(&summary);
+        assert!(truncated.ends_with(G2_SUMMARY_TRUNCATION_MARK));
+        assert!(truncated.chars().count() < summary.chars().count());
+    }
+
+    #[test]
+    fn g2_summary_from_model_applies_truncation() {
+        let filler: String = std::iter::repeat('あ').take(G2_SUMMARY_MAX_CHARS + 500).collect();
+        let view = g2_summary_from_model(
+            ModelG2View {
+                waiting_for_user: true,
+                summary: filler,
+                question_lines: vec![],
+                option_lines: vec![],
+            },
+            &[],
+        )
+        .unwrap();
+        assert!(view.summary.ends_with(G2_SUMMARY_TRUNCATION_MARK));
+        assert!(view.summary.chars().count() <= G2_SUMMARY_MAX_CHARS + G2_SUMMARY_TRUNCATION_MARK.chars().count());
     }
 
     #[test]

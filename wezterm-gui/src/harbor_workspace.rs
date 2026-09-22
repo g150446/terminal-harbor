@@ -209,6 +209,20 @@ pub fn pane_agent_label(
         .or_else(|| pane_process.and_then(agent_label).map(str::to_string))
 }
 
+/// The agent a hook registered for this pane.
+///
+/// Process detection is the usual source, but it goes quiet after a
+/// session-preserving GUI restart: the new GUI has no user vars yet, and a
+/// re-exec'd agent's executable path carries a version rather than its command
+/// name, so a pane running an agent reads as having none until it returns to a
+/// shell prompt. A registration is direct evidence from the agent itself, so it
+/// answers when detection cannot. Records that cannot belong to a live session
+/// are still rejected downstream, where the session is actually read.
+pub fn registered_agent_label(registry_dir: &Path, pane_id: u64) -> Option<String> {
+    let record = wezterm_gui_subcommands::harbor_agent_session::lookup(registry_dir, pane_id)?;
+    agent_label(&record.agent).map(str::to_string)
+}
+
 pub fn agent_label(raw: &str) -> Option<&'static str> {
     let name = raw.trim().to_ascii_lowercase();
     let name = name.strip_suffix(".exe").unwrap_or(&name);
@@ -943,6 +957,42 @@ mod tests {
             pane_agent_label(&vars, Some("codex")).as_deref(),
             Some("Codex")
         );
+    }
+
+    #[test]
+    fn a_registration_names_the_agent_when_detection_has_gone_quiet() {
+        use wezterm_gui_subcommands::harbor_agent_session::{register, AgentSessionRecord};
+        let dir = std::env::temp_dir().join(format!(
+            "harbor-registered-agent-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        register(
+            &dir,
+            &AgentSessionRecord::new(
+                77,
+                "claude",
+                "session".to_string(),
+                dir.join("transcript.jsonl"),
+                None,
+            ),
+        )
+        .unwrap();
+
+        // Detection sees nothing, as it does right after a GUI restart.
+        assert_eq!(
+            pane_agent_label(&std::collections::HashMap::new(), None),
+            None
+        );
+        assert_eq!(
+            registered_agent_label(&dir, 77).as_deref(),
+            Some("Claude"),
+            "a pane an agent registered itself in must not read as a plain shell"
+        );
+        assert_eq!(registered_agent_label(&dir, 78), None);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

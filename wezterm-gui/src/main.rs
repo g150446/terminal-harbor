@@ -45,6 +45,7 @@ mod harbor_peer;
 mod harbor_plan;
 mod harbor_restart;
 mod harbor_settings;
+mod harbor_transcript;
 mod harbor_workspace;
 mod inputmap;
 mod overlay;

@@ -101,4 +101,17 @@ impl LocalProcessInfo {
     pub fn command_name(_pid: u32) -> Option<String> {
         None
     }
+
+    /// Regular files the process currently has open.
+    ///
+    /// Used to tell which session log belongs to which pane for agents that do
+    /// not register themselves: the process writing a log is the one that owns
+    /// it, which beats guessing from a directory and a timestamp.
+    ///
+    /// An empty result means "could not tell", not "nothing open": callers must
+    /// treat it as unknown rather than as evidence.
+    #[cfg(not(target_os = "macos"))]
+    pub fn open_files(_pid: u32) -> Vec<PathBuf> {
+        Vec::new()
+    }
 }
