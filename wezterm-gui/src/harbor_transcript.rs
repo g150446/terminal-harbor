@@ -148,12 +148,13 @@ pub struct Page {
 }
 
 /// The pane whose conversation is wanted.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Target {
     /// The mux server's pane id, which is what agent hooks see.
     pub pane_id: u64,
-    /// The pane's foreground process, when the mux could report one.
-    pub process_pid: Option<u32>,
+    /// The pane's working directory, for agents that register nothing and can
+    /// only be matched to a session by where it was started.
+    pub cwd: Option<PathBuf>,
 }
 
 /// Where logs and registrations live; injectable so tests need no real home.
@@ -243,11 +244,19 @@ impl TranscriptProvider for ClaudeTranscriptProvider {
     }
 }
 
-/// Codex has no hook that could register a pane, so the session is identified
-/// by the log the pane's own process is writing. Nothing is inferred from the
-/// working directory: two Codex sessions in one repository would be
-/// indistinguishable that way, and picking the newer one silently shows the
-/// wrong conversation.
+/// Codex has no hook that could register a pane, so its session is found among
+/// the logs live Codex processes are writing, tied to this pane by the
+/// directory the session itself recorded.
+///
+/// The pane's own pid would be better evidence, but the GUI cannot have it: its
+/// panes are `ClientPane`s owned by the mux server, which sends a process name
+/// and no pid. So every running Codex is considered, and `session_meta.cwd`
+/// picks the one belonging here.
+///
+/// Only live sessions count, and a tie is refused rather than broken. Ranking a
+/// directory's old logs by recency would quietly serve yesterday's
+/// conversation, and two Codex sessions in one directory are genuinely
+/// indistinguishable from here.
 pub struct CodexTranscriptProvider;
 
 impl TranscriptProvider for CodexTranscriptProvider {
@@ -260,8 +269,11 @@ impl TranscriptProvider for CodexTranscriptProvider {
             ))
         };
 
-        let (Some(pid), Some(codex_home)) = (
-            target.process_pid,
+        let (Some(cwd), Some(codex_home)) = (
+            target
+                .cwd
+                .as_deref()
+                .and_then(|dir| dir.canonicalize().ok()),
             env.codex_home
                 .as_deref()
                 .and_then(|dir| dir.canonicalize().ok()),
@@ -270,22 +282,50 @@ impl TranscriptProvider for CodexTranscriptProvider {
         };
         let sessions_dir = codex_home.join("sessions");
 
-        let mut found: Vec<PathBuf> = procinfo::LocalProcessInfo::open_files(pid)
+        let mut live: Vec<PathBuf> = procinfo::LocalProcessInfo::pids_with_command_name("codex")
             .into_iter()
+            .flat_map(procinfo::LocalProcessInfo::open_files)
             .filter(|path| is_codex_rollout(path, &sessions_dir))
             .collect();
-        found.sort();
-        found.dedup();
+        live.sort();
+        live.dedup();
 
-        match found.len() {
+        let mut matching: Vec<PathBuf> = live
+            .into_iter()
+            .filter(|path| {
+                rollout_cwd(path)
+                    .is_some_and(|recorded| recorded.canonicalize().unwrap_or(recorded) == cwd)
+            })
+            .collect();
+
+        match matching.len() {
             0 => unavailable(SessionUnidentified),
             1 => Ok(LocateResult::Found(Located {
-                path: found.remove(0),
+                path: matching.remove(0),
                 format: Format::CodexRollout,
             })),
             _ => unavailable(AmbiguousSession),
         }
     }
+}
+
+/// The directory a rollout says it was started in, from its `session_meta`
+/// header. Read from the head of the file: the header is its first record.
+fn rollout_cwd(path: &Path) -> Option<PathBuf> {
+    let mut head = vec![0u8; 64 * 1024];
+    let mut file = File::open(path).ok()?;
+    let read = file.read(&mut head).ok()?;
+    head.truncate(read);
+    let text = String::from_utf8_lossy(&head);
+    let line = text.lines().next()?;
+    let record: Value = serde_json::from_str(line).ok()?;
+    if record.get("type").and_then(Value::as_str)? != "session_meta" {
+        return None;
+    }
+    record
+        .pointer("/payload/cwd")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
 }
 
 fn is_codex_rollout(path: &Path, sessions_dir: &Path) -> bool {
@@ -591,14 +631,22 @@ const CLAUDE_INJECTED_TAGS: &[&str] = &[
     "command-args",
 ];
 
-/// The same idea for Codex, whose user turns carry environment and plugin
-/// context.
+/// The same idea for Codex, whose user turns carry environment, plugin and
+/// repository context.
 const CODEX_INJECTED_TAGS: &[&str] = &[
     "recommended_plugins",
     "app-context",
     "environment_context",
     "user_instructions",
+    // The body of an AGENTS.md injection.
+    "INSTRUCTIONS",
 ];
+
+/// Codex feeds a project's `AGENTS.md` in as a user turn, under this heading.
+/// It has no marker distinguishing it from something typed, and it is the first
+/// thing in most sessions, so a conversation view that kept it would open on a
+/// wall of repository instructions.
+const CODEX_PROJECT_INSTRUCTIONS_HEADING: &str = "# AGENTS.md instructions for ";
 
 fn parse_claude_record(record: &Value) -> Option<(Role, String, Option<String>)> {
     if record.get("isSidechain").and_then(Value::as_bool) == Some(true) {
@@ -657,6 +705,13 @@ fn parse_codex_record(record: &Value) -> Option<(Role, String, Option<String>)> 
     };
     let blocks = payload.get("content")?.as_array()?;
     let text = join_text_blocks(blocks, &["input_text", "output_text", "text"]);
+    if role == Role::User
+        && text
+            .trim_start()
+            .starts_with(CODEX_PROJECT_INSTRUCTIONS_HEADING)
+    {
+        return None;
+    }
     finish_message(role, text, CODEX_INJECTED_TAGS, at)
 }
 
@@ -1019,7 +1074,7 @@ mod tests {
         let fixture = Fixture::new("unregistered");
         let target = Target {
             pane_id: 99,
-            process_pid: None,
+            cwd: None,
         };
 
         let reply = resolve(WS, Some("Claude"), &target, 20, None, &fixture.env()).unwrap();
@@ -1038,7 +1093,7 @@ mod tests {
         env.mux_started_at = Some(u64::MAX);
         let target = Target {
             pane_id: 7,
-            process_pid: None,
+            cwd: None,
         };
 
         let reply = resolve(WS, Some("Claude"), &target, 20, None, &env).unwrap();
@@ -1051,7 +1106,7 @@ mod tests {
         let fixture = Fixture::new("no-agent");
         let target = Target {
             pane_id: 1,
-            process_pid: None,
+            cwd: None,
         };
 
         let reply = resolve(WS, None, &target, 20, None, &fixture.env()).unwrap();
@@ -1067,7 +1122,7 @@ mod tests {
         fixture.register(3, "secret-session-id", &path);
         let target = Target {
             pane_id: 3,
-            process_pid: None,
+            cwd: None,
         };
 
         let reply = resolve(WS, Some("Claude"), &target, 20, None, &fixture.env()).unwrap();
@@ -1077,6 +1132,71 @@ mod tests {
         assert!(!reply
             .body
             .contains(&fixture.root.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn codex_project_instructions_are_not_shown_as_something_the_user_said() {
+        let fixture = Fixture::new("codex-agents-md");
+        let path = fixture.codex_rollout(&[
+            json!({"type": "response_item", "payload": {"type": "message", "role": "user",
+                   "content": [{"type": "input_text",
+                                "text": "# AGENTS.md instructions for /somewhere/repo\n\n<INSTRUCTIONS>\nbe tidy\n</INSTRUCTIONS>"}]}})
+            .to_string(),
+            json!({"type": "response_item", "payload": {"type": "message", "role": "user",
+                   "content": [{"type": "input_text", "text": "コミットされていないファイルはある？"}]}})
+            .to_string(),
+        ]);
+
+        let page = page_of(&path, Format::CodexRollout, 20, None);
+
+        assert_eq!(
+            page.messages
+                .iter()
+                .map(|m| m.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["コミットされていないファイルはある？"]
+        );
+    }
+
+    #[test]
+    fn a_rollout_reports_the_directory_its_session_started_in() {
+        let fixture = Fixture::new("codex-cwd");
+        let path = fixture.codex_rollout(&[
+            json!({"type": "session_meta",
+                   "payload": {"session_id": "x", "cwd": "/Users/someone/projects/thing"}})
+            .to_string(),
+            json!({"type": "response_item", "payload": {"type": "message", "role": "user",
+                   "content": [{"type": "input_text", "text": "hi"}]}})
+            .to_string(),
+        ]);
+
+        assert_eq!(
+            rollout_cwd(&path),
+            Some(PathBuf::from("/Users/someone/projects/thing"))
+        );
+    }
+
+    #[test]
+    fn a_log_without_a_session_header_claims_no_directory() {
+        let fixture = Fixture::new("codex-no-meta");
+        // A Claude transcript, or a rollout whose header has not been written.
+        let path = fixture.codex_rollout(&[claude_user("hi")]);
+
+        assert_eq!(rollout_cwd(&path), None);
+    }
+
+    #[test]
+    fn codex_without_a_pane_directory_is_unidentified_not_guessed() {
+        let fixture = Fixture::new("codex-no-cwd");
+        let target = Target {
+            pane_id: 5,
+            cwd: None,
+        };
+
+        let reply = resolve(WS, Some("Codex"), &target, 20, None, &fixture.env()).unwrap();
+
+        assert!(reply.body.contains("session_unidentified"));
+        assert!(reply.body.contains("\"agent\":\"Codex\""));
     }
 
     #[test]

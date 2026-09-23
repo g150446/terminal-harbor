@@ -2,6 +2,7 @@
 use super::*;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::Path;
 
 /// `struct proc_fileinfo` from `sys/proc_info.h`, which libc does not expose.
 /// Only its size and position matter here: it precedes the path we want.
@@ -55,6 +56,41 @@ fn fd_path(pid: u32, fd: i32) -> Option<PathBuf> {
         return None;
     }
     Some(OsStr::from_bytes(&path[0..nul]).into())
+}
+
+/// Enumerate all current process identifiers
+fn all_pids() -> Vec<libc::pid_t> {
+    let num_pids = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if num_pids < 1 {
+        return vec![];
+    }
+
+    // Give a bit of padding to avoid looping if processes are spawning
+    // rapidly while we're trying to collect this info
+    const PADDING: usize = 32;
+    let mut pids: Vec<libc::pid_t> = Vec::with_capacity(num_pids as usize + PADDING);
+    loop {
+        let n = unsafe {
+            libc::proc_listallpids(
+                pids.as_mut_ptr() as *mut _,
+                (pids.capacity() * std::mem::size_of::<libc::pid_t>()) as _,
+            )
+        };
+
+        if n < 1 {
+            return vec![];
+        }
+
+        let n = n as usize;
+
+        if n > pids.capacity() {
+            pids.reserve(n + PADDING);
+            continue;
+        }
+
+        unsafe { pids.set_len(n) };
+        return pids;
+    }
 }
 
 impl From<u32> for LocalProcessStatus {
@@ -141,6 +177,26 @@ impl LocalProcessInfo {
             .collect()
     }
 
+    /// Every process this user can see that was invoked as `command`.
+    ///
+    /// Matched on `argv[0]`'s file name, the same basis as [`Self::command_name`],
+    /// because an agent's executable image is often named after its version.
+    pub fn pids_with_command_name(command: &str) -> Vec<u32> {
+        all_pids()
+            .into_iter()
+            .map(|pid| pid as u32)
+            .filter(|pid| {
+                Self::command_name(*pid).is_some_and(|name| {
+                    Path::new(&name)
+                        .file_name()
+                        .and_then(|part| part.to_str())
+                        .map(|part| part.strip_suffix(".exe").unwrap_or(part))
+                        .is_some_and(|part| part.eq_ignore_ascii_case(command))
+                })
+            })
+            .collect()
+    }
+
     /// The name the process was invoked as, taken from `argv[0]`.
     ///
     /// This is not the same thing as the executable image name: a program
@@ -171,41 +227,6 @@ impl LocalProcessInfo {
     }
 
     pub fn with_root_pid(pid: u32) -> Option<Self> {
-        /// Enumerate all current process identifiers
-        fn all_pids() -> Vec<libc::pid_t> {
-            let num_pids = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
-            if num_pids < 1 {
-                return vec![];
-            }
-
-            // Give a bit of padding to avoid looping if processes are spawning
-            // rapidly while we're trying to collect this info
-            const PADDING: usize = 32;
-            let mut pids: Vec<libc::pid_t> = Vec::with_capacity(num_pids as usize + PADDING);
-            loop {
-                let n = unsafe {
-                    libc::proc_listallpids(
-                        pids.as_mut_ptr() as *mut _,
-                        (pids.capacity() * std::mem::size_of::<libc::pid_t>()) as _,
-                    )
-                };
-
-                if n < 1 {
-                    return vec![];
-                }
-
-                let n = n as usize;
-
-                if n > pids.capacity() {
-                    pids.reserve(n + PADDING);
-                    continue;
-                }
-
-                unsafe { pids.set_len(n) };
-                return pids;
-            }
-        }
-
         /// Obtain info block for a pid.
         /// Note that the process could have gone away since we first
         /// observed the pid and the time we call this, so we must

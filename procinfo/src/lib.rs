@@ -114,4 +114,10 @@ impl LocalProcessInfo {
     pub fn open_files(_pid: u32) -> Vec<PathBuf> {
         Vec::new()
     }
+
+    /// Every process this user can see that was invoked as `command`.
+    #[cfg(not(target_os = "macos"))]
+    pub fn pids_with_command_name(_command: &str) -> Vec<u32> {
+        Vec::new()
+    }
 }

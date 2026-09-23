@@ -43,8 +43,9 @@ wrote. Left out on purpose:
 - context the harness injects into a user turn. The wrappers
   (`<system-reminder>`, `<local-command-caveat>`, `<command-name>` and friends
   for Claude; `<recommended_plugins>`, `<app-context>`,
-  `<environment_context>`, `<user_instructions>` for Codex) are removed, and a
-  turn that was nothing but injected context is dropped.
+  `<environment_context>`, `<user_instructions>`, `<INSTRUCTIONS>` for Codex)
+  are removed, and a turn that was nothing but injected context is dropped.
+  Codex's `AGENTS.md` injection is dropped by its heading (see below).
 
 A message longer than 8192 characters is cut with a visible marker and
 `truncated: true`. A success is never silently shortened.
@@ -136,20 +137,35 @@ the same installation serves both endpoints. The recorded transcript is
 re-validated on every request: canonicalized, and required to be a regular file
 under `<claude config dir>/projects`.
 
-**Codex** — Codex has no hook that could register a pane, so the session is
-identified by the log the pane's own process is writing: the foreground
-process's open descriptors are read (`PROC_PIDLISTFDS`, then
-`PROC_PIDFDVNODEPATHINFO`), and a descriptor pointing at
-`<codex home>/sessions/**/rollout-*.jsonl` identifies the session.
+**Codex** — Codex has no hook that could register a pane, so its session is
+found among the logs *live* Codex processes are writing. Every process invoked
+as `codex` is listed, its open descriptors are read (`PROC_PIDLISTFDS`, then
+`PROC_PIDFDVNODEPATHINFO`), and those pointing at
+`<codex home>/sessions/**/rollout-*.jsonl` are the candidates. Each candidate's
+`session_meta.cwd` — the directory the session itself recorded — is compared
+with the pane's working directory to pick the one that belongs here.
 
-Nothing is inferred from the working directory. Two Codex sessions in one
-repository are indistinguishable that way, and silently picking the newer one
-would show someone else's conversation. No candidate reads as
-`session_unidentified`, more than one as `ambiguous_session`.
+The pane's own pid would be better evidence, but the GUI cannot have it: its
+panes are `ClientPane`s owned by the mux server, and `get_foreground_process_info`
+is implemented only for local panes. The mux sends a process *name* through the
+`TH_PANE_PROCESS` user var and no pid, so matching by directory is what is
+available without a mux protocol change.
 
-This requires the mux server and the GUI to be on the same machine, which is
-how Harbor runs. If the pid cannot be inspected, the answer is
-`session_unidentified` — never a guess.
+Two rules keep this from guessing. Only sessions a running process holds open
+are considered, so an old log in the same directory is never served; ranking by
+recency would quietly show yesterday's conversation. And a tie is refused: two
+Codex sessions in one directory are genuinely indistinguishable from here, so
+they read as `ambiguous_session` rather than one of them being picked. No
+candidate reads as `session_unidentified`.
+
+This requires the Codex process and the GUI to be on the same machine, which is
+how Harbor runs.
+
+Codex also feeds a project's `AGENTS.md` in as a user turn, headed
+`# AGENTS.md instructions for <path>`. It carries no marker separating it from
+something typed, so it is recognised by that heading and dropped; otherwise
+every session would open on a wall of repository instructions attributed to the
+user.
 
 ## Privacy
 

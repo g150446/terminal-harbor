@@ -6,6 +6,47 @@
 
 ---
 
+## 2026-09-23 17:41 — Codexのセッション特定をcwd照合に作り直し（GUI）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `47c50d8c6` + 本変更（別作業のG2要約切り詰めと`/key`の`left`/`right`は前回の配置でコミット済み） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) / cargo 1.97.1 (c980f4866 2026-06-30) |
+| ビルド日時 | 2026-09-23 17:41 JST |
+| `wezterm-gui` | `cff8d348071c31c3387efd921179a42489f3596ebb4de877d9ceb772154c648d` |
+| `wezterm` | `96f3d4a873c48ff8577adf2e38fdd8ff865f4b18373cf81dde48fb984bccc2a8` |
+| `wezterm-mux-server` | `2d27c17fc892d14f3db2f0143744faa81b6a55cfcd12d5a23d3e4d57f136fe75` |
+| `strip-ansi-escapes` | `e5ba85a11a22b10e02a4cf49e98e9ae7218ee2647a1e4b592ac61abdcc5a6f0d` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、配置前後の `--verify --deep --strict` 合格 |
+| 配置日時 | 2026-09-23 17:41 JST |
+| 旧バンドル退避先 | `/private/tmp/Terminal Harbor.previous-20260923-174113.app`（同日 17:38 の中間配置分は `/private/tmp/Terminal Harbor.previous-20260923-173817.app`） |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`) |
+
+**API 1.12.0 初版のCodex特定は実機で動かなかった。** ペインのフォアグラウンドプロセスのpidを
+前提にしていたが、`get_foreground_process_info`は`LocalPane`にしか実装がなく、GUIが持つ
+`ClientPane`では常に`None`を返す。muxが送るのは`TH_PANE_PROCESS`のプロセス名文字列だけで
+pidは流れていない（`wezterm-mux-server-impl/src/sessionhandler.rs`のコメントが明記している
+とおり）。pidを流すにはmuxプロトコルの変更＝全ペインを落とす完全再起動が要るため採らず、
+GUIが実際に持つ情報だけで特定する方式へ作り直した。
+
+`codex`として起動している生きているプロセスを全列挙し（`proc_listallpids`）、それぞれの
+開いているrolloutを集め（`PROC_PIDLISTFDS`）、各候補の`session_meta.cwd`とペインのcwdを
+照合する。生きているプロセスが掴んでいるログだけが候補なので、同じディレクトリの古いログを
+掴むことはない。0件は`session_unidentified`、2件以上は`ambiguous_session`で、同点は破らない。
+
+あわせて、**Codexが`AGENTS.md`をuserのメッセージとして注入する**ことが実機で判明した
+（`# AGENTS.md instructions for <path>`の見出しと`<INSTRUCTIONS>`本文）。他のuserターンと
+区別する印が無いため見出しで判定して落とす。これを残すと、会話を開くたびにリポジトリの
+指示文が本人の発言として先頭に並ぶ。
+
+実機で確認した範囲: Codexのペインで会話が取得できること（`source: codex_rollout`、注入された
+`AGENTS.md`が出ないこと、応答にtranscriptのパス・ファイル名・セッションidが出ないこと）、
+Claudeのペインが引き続き取得できること、Android実機の会話ビューに「あなた / Codex」として
+並ぶこと。なお検証の一時点で応答本文に`/Users/...`が現れたが、これは会話そのものがその
+パスに言及していたためで、メタデータの漏洩ではない。
+確認していない範囲: 同一ディレクトリで2つのCodexを動かしたときの`ambiguous_session`
+（ユニットテストのみ）。
+
 ## 2026-09-23 07:44 — エージェント会話取得 API 1.12.0（GUI）
 
 | 項目 | 値 |

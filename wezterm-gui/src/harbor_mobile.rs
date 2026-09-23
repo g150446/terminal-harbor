@@ -1212,7 +1212,7 @@ fn dispatch(
                     target.agent.as_deref(),
                     &harbor_transcript::Target {
                         pane_id: target.pane_id,
-                        process_pid: target.process_pid,
+                        cwd: target.cwd.clone(),
                     },
                     limit,
                     before.as_deref(),
@@ -2163,10 +2163,9 @@ struct PlanTarget {
     /// The mux server's pane id, which is what an agent's hook sees in
     /// `WEZTERM_PANE` and therefore what the session registry is keyed by.
     pane_id: u64,
-    /// The pane's foreground process, for agents that register nothing and can
-    /// only be identified by the session log they are writing. The mux runs on
-    /// this machine, so its pid is one we can inspect.
-    process_pid: Option<u32>,
+    /// The pane's working directory, for agents that register nothing and can
+    /// only be matched to a session by where it was started.
+    cwd: Option<PathBuf>,
 }
 
 /// Identify the agent and registry key for the pane `/screen` would mirror, so
@@ -2194,9 +2193,9 @@ fn plan_target(id: &str) -> anyhow::Result<PlanTarget> {
             )
         }),
         pane_id,
-        process_pid: pane
-            .get_foreground_process_info(CachePolicy::AllowStale)
-            .map(|info| info.pid),
+        cwd: pane
+            .get_current_working_dir(CachePolicy::AllowStale)
+            .and_then(|url| url.to_file_path().ok()),
     })
 }
 
