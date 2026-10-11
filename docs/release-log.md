@@ -6,6 +6,47 @@
 
 ---
 
+## 2026-10-11 16:44 — origin/main の一括反映（peer pair・plan・transcript・日本語フォールバック等、mux込み）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `fef8ea189`（working tree クリーン、dirty なし） |
+| toolchain | rustc 1.89.0 (29483883e 2025-08-04) |
+| ビルド日時 | 2026-10-11 16:41–16:42 JST |
+| `wezterm-gui`（配置後） | `fadbf2ed2ceb295e67473ad83c19e8715cea1fece70d0e1ccad3dc411f083333` |
+| `wezterm`（配置後） | `4cc71949d776c0e95138d2d510eab6747db8fb73405d7b8483f36fba325699c8` |
+| `wezterm-mux-server`（配置後） | `2cb63d0d7468aa94130300a90edaabb30626cfb0fc1f9dcb6f5111683cc6dea6` |
+| `strip-ansi-escapes`（配置後） | `962073ef33c8d48536bf21593c752bf01b7bb7d0a22d73abf44b80553cf42af6` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、ステージ先と配置後の `--verify --deep --strict` 双方合格 |
+| 配置日時 | 2026-10-11 16:43 JST |
+| 旧バンドル退避先 | `/private/tmp/Terminal-Harbor-previous-20261011.app` |
+| 必要な再起動方式 | 復元付きセッション再起動 (`wezterm restart --full`) |
+
+`2fa5fb464` から `fef8ea189` までの16コミットを一括反映した。内訳は mobile bridge API
+1.6.0〜1.12.0 系（2台目のHarbor pair、`/key` の space/tab/shift-tab/enter/left/right、
+`/plan` と `/transcript`、色付き screen mirror、Cursor CLI 検出）、サイドバーのワーク
+スペース番号表示、Hiragino Sans の日本語フォールバック、初回起動時のランタイムディ
+レクトリ作成、`wezterm agent-session` フック系。
+
+**`--full` を選んだ理由:** `wezterm-mux-server-impl/src/sessionhandler.rs`（client attach
+時の1回描画プッシュ要求）と `mux/src/localpane.rs`、`procinfo` の変更が mux バイナリに
+含まれるため、保持再起動では古いホストに残って無効化する。GUI/mux PID が両方変わる復元
+型が必須と判断した（セッションは実行前に破棄了解済み）。
+
+配置後の受け入れ確認: GUI 4059→41991、mux 42003 が `--harbor-session-host` で新バンドル
+由来。`wezterm cli list` でペイン1件が復元。port 7780 listen、`/v1/identity` HTTP 200、
+`_terminal-harbor._tcp` の mDNS 広告を確認（peers 側の広告も同時に見えており pair 状態
+は無傷）。旧テンプレート由来の ANGLE dylib（libEGL/libGLESv2/libGLESv1_CM）は新バイナリ
+が `otool -L` で参照しないことを確認した上で完成バンドルから除去した。
+
+ハッシュは strip + ad-hoc 署名後のインストール済みバンドル実測値。target/release の
+ビルド直後値とは署名再書き込みのため一致しない。`strip-ansi-escapes` は今回撤変がなく
+cargo の再ビルド対象外だったが、内容ハッシュは従来配置と同一（d6f01dd2…）であることを
+build ツリー側で確認済み。
+
+未確認: peer pair の新規追加フローそのものと音声インテント（OpenRouter）は実機操作を
+要するため、今回のデプロイ検証では identity と mDNS の範囲に留めた。
+
 ## 2026-09-23 17:41 — Codexのセッション特定をcwd照合に作り直し（GUI）
 
 | 項目 | 値 |
