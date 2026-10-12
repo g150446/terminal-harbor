@@ -6,6 +6,56 @@
 
 ---
 
+## 2026-10-12 14:25 — Tailscale device id だけの peer pairing（GUI）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `948f2e76e`（working tree クリーン、dirty なし） |
+| toolchain | rustc 1.89.0 (29483883e 2025-08-04) |
+| ビルド日時 | 2026-10-12 14:19–14:23 JST |
+| `wezterm-gui`（配置後） | `0497c1a5b7d56315ce59d2b2b7eed8c1970be26f4bd3284acdbdb1dab1c789f4` |
+| `wezterm`（配置後） | `922233f058c37a110bc5683e93c61037b26a0f0d95e7109da6c40c455cf9a6cc` |
+| `wezterm-mux-server`（配置後） | `bc9fb807bda3679c04fd4ce684a06a294c3c2e3a1c6f4ecd982d7eb55b1dd32b` |
+| `strip-ansi-escapes`（配置後） | `d88dbb5b4736eda77b67361e040a162d7a54a4be96235c931c163cd49d758e73` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、ステージ先と配置後の `--verify --deep --strict` 双方合格 |
+| 配置日時 | 2026-10-12 14:24 JST |
+| 旧バンドル退避先 | `/private/tmp/Terminal-Harbor-previous-20261012.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`) |
+
+変更は `wezterm-gui` 内のみ（bridge の `POST /v1/pair/tailnet`、peer client の
+Tailscale device id 解決、サイドバー2行、settings schema v2）。mux・ワイヤプロトコル
+・PTY は無変更なので保持再起動で十分と判断した。ハッシュは strip + ad-hoc 署名後の
+インストール済みバンドル実測値で、ステージ先の実測値と一致。テンプレート由来の
+ANGLE dylib 3種は新 `wezterm-gui` が `otool -L` で参照しないことを確認した上で
+完成バンドルへ含めていない。
+
+`API_VERSION` は 1.12.0 のまま。mobile app が呼ぶ契約は無変更で、新 endpoint は
+desktop peer 専用。OpenAPI 文書側だけ 1.4.0 に上げ、`TailnetPairResponse` を
+追加した（mobile repo 側の同一作業コミット）。
+
+配置後の受け入れ確認:
+- GUI 48381→50465、mux 42003 は継続（保持再起動どおり）。
+- port 7780 を新 GUI PID が listen、`/v1/identity` HTTP 200 かつ `server_id` は
+  更新前と同一（既存 pairing 無傷）、`_terminal-harbor._tcp` 広告も継続。
+- `POST /v1/pair/tailnet` を loopback から叩くと **403 `tailnet pairing is disabled`**。
+  opt-in は既定 off で、設定チェックがアドレス判定より先に効く fail-closed を実機で確認。
+  この要求は credential を残さない（`mobile-devices.json` は2件・tailscale tagged 0件のまま、
+  本機に `paired-desktops.json` は未作成）。
+- 完成バンドルの `wezterm-gui` バイナリに新ラベル（`Pair via Tailscale (clipboard)`、
+  `Tailscale auto-pair: on/off`）と `/v1/pair/tailnet` が混入していることを strings で確認。
+
+**未確認（実機2台が必要）:** 別マシンを MagicDNS name で実際にペアリングする
+往復経路、およびサイドバー2行のクリック操作。unit test は同一 tailnet user 判定、
+Tailscale アドレス範囲、device id 解決、pairing request 妥当性のみを検証しており、
+実ネットワーク往復は検証していない。切りっぱなしの opt-in は「同じ Tailscale
+ユーザーの全 device が無承認で操作可能」になるため、運用文書どおり pairing 後に
+off へ戻すこと。
+
+整形: 変更した6ファイルへ `cargo +nightly fmt` をかけたが、未変更行で formatter が
+提案した既存の折り返し6箇所（mobile 5・sidebar import 1）は本次変更と無関係なので
+HEAD の形に戻した。よって `cargo +nightly fmt --all -- --check` はこの6箇所について
+は本次変更前と同じ失敗のまま（改善も悪化もさせていない）。
+
 ## 2026-10-11 16:44 — origin/main の一括反映（peer pair・plan・transcript・日本語フォールバック等、mux込み）
 
 | 項目 | 値 |
