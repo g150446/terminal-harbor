@@ -162,6 +162,8 @@ pub enum UIItemType {
     HarborOpenPairQr,
     HarborCopyPairUri,
     HarborPairPeer,
+    HarborPairPeerTailscale,
+    HarborToggleTailnetPair,
     HarborConfirmLan(String),
     HarborUnpairPeer(String),
     HarborRemoteWorkspace {

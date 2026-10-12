@@ -62,7 +62,7 @@ fn default_auth_version() -> u8 {
     1
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct DeviceRecord {
     #[serde(default)]
     client_id: String,
@@ -71,6 +71,10 @@ struct DeviceRecord {
     created_at: u64,
     #[serde(default = "default_auth_version")]
     auth_version: u8,
+    /// Tailscale node id when the pairing was created by the no-code tailnet
+    /// flow. Used to replace a peer's credential instead of stacking copies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tailscale_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -200,6 +204,25 @@ fn is_tailscale_ipv4(ip: std::net::Ipv4Addr) -> bool {
     octets[0] == 100 && (64..=127).contains(&octets[1])
 }
 
+fn is_tailscale_ipv6(ip: std::net::Ipv6Addr) -> bool {
+    // Tailscale hands out unique-local addresses from fc00::/7, so a packet
+    // from that range arrived over the tailnet interface.
+    (ip.octets()[0] & 0xfe) == 0xfc
+}
+
+fn is_tailscale_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => is_tailscale_ipv4(ip),
+        std::net::IpAddr::V6(ip) => {
+            is_tailscale_ipv6(ip) || ip.to_ipv4_mapped().map(is_tailscale_ipv4).unwrap_or(false)
+        }
+    }
+}
+
+fn is_tailscale_addr(peer: Option<SocketAddr>) -> bool {
+    peer.map(|peer| is_tailscale_ip(peer.ip())).unwrap_or(false)
+}
+
 #[cfg(unix)]
 fn local_tailscale_ipv4() -> Option<std::net::Ipv4Addr> {
     let mut addresses = std::ptr::null_mut();
@@ -234,6 +257,7 @@ fn tailscale_output(args: &[&str]) -> Option<Vec<u8>> {
         "/usr/local/bin/tailscale",
         "/opt/homebrew/bin/tailscale",
         "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        "C:/Program Files/Tailscale/tailscale.exe",
         "tailscale",
     ];
     let mut child = candidates.iter().find_map(|executable| {
@@ -282,56 +306,38 @@ fn tailscale_output(args: &[&str]) -> Option<Vec<u8>> {
 
 fn connection_endpoints(host: &str, port: u16) -> Vec<Endpoint> {
     let mut endpoints = Vec::new();
-    if let Some(status_bytes) = tailscale_output(&["status", "--json"]) {
-        if let Ok(status) = serde_json::from_slice::<serde_json::Value>(&status_bytes) {
-            let running = status
-                .get("BackendState")
-                .and_then(|value| value.as_str())
-                .map(|value| value.eq_ignore_ascii_case("running"))
+    if let Some(snapshot) = tailscale_snapshot() {
+        if let Some(self_node) = snapshot.self_node.as_ref() {
+            let serve_enabled = tailscale_output(&["serve", "status", "--json"])
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .map(|text| {
+                    text.contains("127.0.0.1:7780")
+                        || text.contains("localhost:7780")
+                        || text.contains("http://127.0.0.1:7780")
+                })
                 .unwrap_or(false);
-            if running {
-                let dns_name = status
-                    .get("Self")
-                    .and_then(|value| value.get("DNSName"))
-                    .and_then(|value| value.as_str())
-                    .map(|value| value.trim_end_matches('.'))
-                    .filter(|value| !value.is_empty());
-                let serve_enabled = tailscale_output(&["serve", "status", "--json"])
-                    .and_then(|bytes| String::from_utf8(bytes).ok())
-                    .map(|text| {
-                        text.contains("127.0.0.1:7780")
-                            || text.contains("localhost:7780")
-                            || text.contains("http://127.0.0.1:7780")
-                    })
-                    .unwrap_or(false);
-                if serve_enabled {
-                    if let Some(name) = dns_name {
-                        endpoints.push(endpoint("tailscale_https", format!("https://{name}")));
-                    }
-                }
-                if let Some(name) = dns_name {
-                    endpoints.push(endpoint(
-                        "tailscale_direct",
-                        format!("http://{name}:{port}"),
-                    ));
-                }
-                if let Some(ips) = status
-                    .get("Self")
-                    .and_then(|value| value.get("TailscaleIPs"))
-                    .and_then(|value| value.as_array())
-                {
-                    for ip in ips.iter().filter_map(|value| value.as_str()) {
-                        let authority = if ip.contains(':') {
-                            format!("[{ip}]")
-                        } else {
-                            ip.to_string()
-                        };
-                        endpoints.push(endpoint(
-                            "tailscale_direct",
-                            format!("http://{authority}:{port}"),
-                        ));
-                    }
-                }
+            if serve_enabled && !self_node.dns_name.is_empty() {
+                endpoints.push(endpoint(
+                    "tailscale_https",
+                    format!("https://{}", self_node.dns_name),
+                ));
+            }
+            if !self_node.dns_name.is_empty() {
+                endpoints.push(endpoint(
+                    "tailscale_direct",
+                    format!("http://{}:{}", self_node.dns_name, port),
+                ));
+            }
+            for ip in &self_node.ips {
+                let authority = if ip.contains(':') {
+                    format!("[{ip}]")
+                } else {
+                    ip.clone()
+                };
+                endpoints.push(endpoint(
+                    "tailscale_direct",
+                    format!("http://{authority}:{port}"),
+                ));
             }
         }
     }
@@ -342,18 +348,282 @@ fn connection_endpoints(host: &str, port: u16) -> Vec<Endpoint> {
         .iter()
         .any(|endpoint| endpoint.kind == "tailscale_direct")
     {
-        if let Some(ip) = local_tailscale_ipv4() {
-            endpoints.push(endpoint("tailscale_direct", format!("http://{ip}:{port}")));
-        } else if let Some(ip) = tailscale_output(&["ip", "-4"])
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .map(|text| text.trim().to_string())
-            .filter(|text| text.parse::<std::net::Ipv4Addr>().is_ok())
-        {
+        if let Some(ip) = own_tailscale_ipv4() {
             endpoints.push(endpoint("tailscale_direct", format!("http://{ip}:{port}")));
         }
     }
     endpoints.push(endpoint("lan", format!("http://{host}:{port}")));
     endpoints
+}
+
+/// A node in the local Tailscale status document, reduced to the fields Harbor
+/// uses to address and authorize a peer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TailscaleNode {
+    pub(crate) id: String,
+    pub(crate) host_name: String,
+    pub(crate) dns_name: String,
+    pub(crate) user_id: String,
+    pub(crate) ips: Vec<String>,
+}
+
+/// What this machine's Tailscale client currently reports about its tailnet.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TailscaleSnapshot {
+    pub(crate) self_user_id: String,
+    pub(crate) self_node: Option<TailscaleNode>,
+    pub(crate) peers: Vec<TailscaleNode>,
+    /// MagicDNS zone of the tailnet, empty when MagicDNS is off.
+    pub(crate) magic_dns_suffix: String,
+}
+
+impl TailscaleSnapshot {
+    fn node_for_ip(&self, ip: std::net::IpAddr) -> Option<&TailscaleNode> {
+        let text = ip.to_string();
+        self.self_node
+            .iter()
+            .chain(self.peers.iter())
+            .find(|node| node.ips.iter().any(|candidate| candidate == &text))
+    }
+}
+
+fn json_id_field(value: Option<&serde_json::Value>) -> String {
+    match value {
+        Some(value) => {
+            if let Some(text) = value.as_str() {
+                text.trim().to_string()
+            } else {
+                // Tailnet user IDs arrive as JSON numbers, not strings.
+                value
+                    .as_u64()
+                    .map(|number| number.to_string())
+                    .unwrap_or_default()
+            }
+        }
+        None => String::new(),
+    }
+}
+
+fn tailscale_ips(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.as_str())
+        .map(|ip| {
+            ip.trim_end_matches("/32")
+                .trim_end_matches("/128")
+                .to_string()
+        })
+        .collect()
+}
+
+fn tailscale_node_from(value: &serde_json::Value) -> Option<TailscaleNode> {
+    let id = json_id_field(value.get("ID"));
+    if id.is_empty() {
+        return None;
+    }
+    Some(TailscaleNode {
+        id,
+        host_name: value
+            .get("HostName")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        dns_name: value
+            .get("DNSName")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim()
+            .trim_end_matches('.')
+            .to_string(),
+        user_id: json_id_field(value.get("UserID")),
+        ips: tailscale_ips(value.get("TailscaleIPs")?),
+    })
+}
+
+/// Split out of the CLI call so the same-user policy is unit-testable against a
+/// fixture status document.
+pub(crate) fn tailscale_snapshot_from_status(status: &serde_json::Value) -> TailscaleSnapshot {
+    let running = status
+        .get("BackendState")
+        .and_then(|value| value.as_str())
+        .map(|value| value.eq_ignore_ascii_case("running"))
+        .unwrap_or(false);
+    if !running {
+        return TailscaleSnapshot::default();
+    }
+    let self_node = status
+        .get("Self")
+        .and_then(tailscale_node_from)
+        .filter(|node| !node.ips.is_empty());
+    let peers = status
+        .get("Peer")
+        .and_then(|value| value.as_object())
+        .map(|map| {
+            map.values()
+                .filter_map(tailscale_node_from)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let self_user_id = self_node
+        .as_ref()
+        .map(|node| node.user_id.clone())
+        .unwrap_or_default();
+    let magic_dns_suffix = status
+        .get("MagicDNSSuffix")
+        .and_then(|value| value.as_str())
+        .map(|value| value.trim().trim_end_matches('.').to_string())
+        .unwrap_or_default();
+    TailscaleSnapshot {
+        self_user_id,
+        self_node,
+        peers,
+        magic_dns_suffix,
+    }
+}
+
+pub(crate) fn tailscale_snapshot() -> Option<TailscaleSnapshot> {
+    let bytes = tailscale_output(&["status", "--json"])?;
+    let status = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
+    let snapshot = tailscale_snapshot_from_status(&status);
+    (snapshot.self_node.is_some() || !snapshot.peers.is_empty()).then_some(snapshot)
+}
+
+/// `tailscale whois` is the fallback when the status document is unavailable or
+/// too large for the GUI launch environment. It reports the node that owns an
+/// address straight from the tailnet's coordination data.
+fn tailscale_whois_node(ip: std::net::IpAddr) -> Option<TailscaleNode> {
+    let bare = ip.to_string();
+    let bracketed = format!("[{bare}]");
+    let args: Vec<&str> = if ip.is_ipv6() {
+        vec!["whois", "--json", bracketed.as_str()]
+    } else {
+        vec!["whois", "--json", bare.as_str()]
+    };
+    let bytes = tailscale_output(&args).or_else(|| {
+        if ip.is_ipv6() {
+            tailscale_output(&["whois", "--json", bare.as_str()])
+        } else {
+            None
+        }
+    })?;
+    let value = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
+    let node = value.get("Node")?;
+    let id = json_id_field(node.get("StableID"));
+    if id.is_empty() {
+        return None;
+    }
+    Some(TailscaleNode {
+        id,
+        host_name: node
+            .get("Name")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_string(),
+        dns_name: node
+            .get("Name")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim()
+            .trim_end_matches('.')
+            .to_string(),
+        user_id: json_id_field(node.get("User")),
+        ips: node.get("Addresses").map(tailscale_ips).unwrap_or_default(),
+    })
+}
+
+/// The tailnet relationship of an inbound source address, which is the whole
+/// authority for a no-code pairing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TailnetAccess {
+    /// Another node owned by this machine's own tailnet user.
+    SameUser(TailscaleNode),
+    SelfNode,
+    DifferentUser,
+    /// The address is a Tailscale address but no identity source knows it.
+    Unknown,
+    NotTailnet,
+}
+
+/// The same tailnet user owns both ends of a no-code pairing. Compared on the
+/// numeric tailnet user ID rather than a display name, which can be empty.
+fn tailnet_user_is_self(self_user_id: &str, node: &TailscaleNode) -> bool {
+    !self_user_id.is_empty() && !node.user_id.is_empty() && node.user_id == self_user_id
+}
+
+fn access_for_node(self_user_id: &str, self_node_id: &str, node: &TailscaleNode) -> TailnetAccess {
+    if !self_node_id.is_empty() && node.id == self_node_id {
+        return TailnetAccess::SelfNode;
+    }
+    if tailnet_user_is_self(self_user_id, node) {
+        return TailnetAccess::SameUser(node.clone());
+    }
+    TailnetAccess::DifferentUser
+}
+
+/// Decide from the status document. `None` means the document does not list the
+/// address, so the caller should try `whois`.
+fn decide_tailnet_access(
+    snapshot: &TailscaleSnapshot,
+    source: std::net::IpAddr,
+) -> Option<TailnetAccess> {
+    let node = snapshot.node_for_ip(source)?;
+    let self_node_id = snapshot
+        .self_node
+        .as_ref()
+        .map(|node| node.id.clone())
+        .unwrap_or_default();
+    Some(access_for_node(&snapshot.self_user_id, &self_node_id, node))
+}
+
+fn own_tailscale_ipv4() -> Option<std::net::Ipv4Addr> {
+    local_tailscale_ipv4().or_else(|| {
+        tailscale_output(&["ip", "-4"])
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .map(|text| text.trim().to_string())
+            .and_then(|text| text.parse::<std::net::Ipv4Addr>().ok())
+    })
+}
+
+/// Our own tailnet identity when the status document could not be read.
+fn own_identity_from_whois() -> (String, String) {
+    let own_ip = own_tailscale_ipv4().map(std::net::IpAddr::V4);
+    match own_ip.and_then(tailscale_whois_node) {
+        Some(node) => (node.user_id, node.id),
+        None => (String::new(), String::new()),
+    }
+}
+
+fn authorize_tailnet_source(source: std::net::IpAddr) -> TailnetAccess {
+    if !is_tailscale_ip(source) {
+        return TailnetAccess::NotTailnet;
+    }
+    let snapshot = tailscale_snapshot();
+    if let Some(snapshot) = snapshot.as_ref() {
+        if let Some(access) = decide_tailnet_access(snapshot, source) {
+            return access;
+        }
+    }
+    let Some(node) = tailscale_whois_node(source) else {
+        return TailnetAccess::Unknown;
+    };
+    let (self_user_id, self_node_id) = match snapshot.as_ref() {
+        Some(snapshot) if !snapshot.self_user_id.is_empty() => (
+            snapshot.self_user_id.clone(),
+            snapshot
+                .self_node
+                .as_ref()
+                .map(|node| node.id.clone())
+                .unwrap_or_default(),
+        ),
+        _ => own_identity_from_whois(),
+    };
+    access_for_node(&self_user_id, &self_node_id, &node)
 }
 
 fn start_dns_sd(server_id: &str, port: u16) -> anyhow::Result<ServiceDaemon> {
@@ -879,6 +1149,9 @@ fn dispatch(
     if method == "POST" && path == "/v1/pair/local" {
         return pair_local(headers, body, peer);
     }
+    if method == "POST" && path == "/v1/pair/tailnet" {
+        return pair_tailnet(headers, body, peer);
+    }
 
     let auth = authenticate(method, raw_path, headers, body);
     if method == "GET" && path == "/v1/identity" && auth.is_none() {
@@ -1274,6 +1547,137 @@ pub(crate) fn derive_device_key(
     key
 }
 
+/// A pairing request that carries no shared secret: the host mints the device
+/// credential and returns it over a channel it already trusts (loopback today,
+/// Tailscale for same-user desktop peers).
+#[derive(Debug)]
+struct MintedPairRequest {
+    client_id: String,
+    client_nonce: Vec<u8>,
+    device_name: Option<String>,
+    request_nonce: String,
+}
+
+fn parse_minted_pair_request(
+    headers: &HashMap<String, String>,
+    body: &[u8],
+) -> Result<MintedPairRequest, HttpResponse> {
+    #[derive(Deserialize)]
+    struct MintedPairBody {
+        auth_version: String,
+        client_id: String,
+        client_nonce: String,
+        #[serde(default)]
+        device_name: Option<String>,
+    }
+    let parsed: MintedPairBody = match serde_json::from_slice(body) {
+        Ok(value) => value,
+        Err(_) => return Err(signed_response(400, json_error("invalid json body"), None)),
+    };
+    if parsed.auth_version != AUTH_VERSION {
+        return Err(signed_response(
+            400,
+            json_error("unsupported auth_version"),
+            None,
+        ));
+    }
+    if Uuid::parse_str(&parsed.client_id).is_err() {
+        return Err(signed_response(400, json_error("invalid client_id"), None));
+    }
+    let client_nonce = match URL_SAFE_NO_PAD
+        .decode(parsed.client_nonce.as_bytes())
+        .ok()
+        .filter(|value| value.len() == 32)
+    {
+        Some(value) => value,
+        None => {
+            return Err(signed_response(
+                400,
+                json_error("invalid client_nonce"),
+                None,
+            ))
+        }
+    };
+    let request_nonce = match headers.get("x-harbor-nonce") {
+        Some(value) if value.len() >= 16 => value.clone(),
+        _ => {
+            return Err(signed_response(
+                400,
+                json_error("missing pairing nonce"),
+                None,
+            ))
+        }
+    };
+    Ok(MintedPairRequest {
+        client_id: parsed.client_id,
+        client_nonce,
+        device_name: parsed.device_name,
+        request_nonce,
+    })
+}
+
+struct MintedCredential {
+    key: Vec<u8>,
+    pair_token: String,
+    server_id: String,
+    host: String,
+    port: u16,
+}
+
+fn mint_device_credential(
+    request: &MintedPairRequest,
+    default_name: &str,
+    tailscale_id: Option<&str>,
+) -> MintedCredential {
+    let pair_token = random_token();
+    let mut inner = INNER.lock();
+    let key = derive_device_key(
+        &pair_token,
+        &inner.server_id,
+        &request.client_id,
+        &request.client_nonce,
+    );
+    let stored_secret = URL_SAFE_NO_PAD.encode(&key);
+    let record = DeviceRecord {
+        client_id: request.client_id.clone(),
+        token: stored_secret.clone(),
+        name: request
+            .device_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(default_name)
+            .to_string(),
+        created_at: now_unix(),
+        auth_version: 2,
+        tailscale_id: tailscale_id.map(str::to_string),
+    };
+    if let Some(node_id) = tailscale_id {
+        // Re-pairing the same tailnet node replaces its credential instead of
+        // stacking duplicates that all show up as controllable devices.
+        let stale: Vec<String> = inner
+            .devices
+            .iter()
+            .filter(|(_, record)| record.tailscale_id.as_deref() == Some(node_id))
+            .map(|(token, _)| token.clone())
+            .collect();
+        for token in stale {
+            inner.devices.remove(&token);
+        }
+    }
+    inner.devices.insert(stored_secret, record);
+    if let Err(err) = save_devices(&inner) {
+        log::error!("saving mobile devices: {err:#}");
+    }
+    MintedCredential {
+        key,
+        pair_token,
+        server_id: inner.server_id.clone(),
+        host: inner.host.clone(),
+        port: inner.port,
+    }
+}
+
 fn pair_local(
     headers: &HashMap<String, String>,
     body: &[u8],
@@ -1282,79 +1686,103 @@ fn pair_local(
     if !is_loopback_addr(peer) {
         return signed_response(403, json_error("local pairing is loopback-only"), None);
     }
-    #[derive(Deserialize)]
-    struct LocalPairBody {
-        auth_version: String,
-        client_id: String,
-        client_nonce: String,
-        #[serde(default)]
-        device_name: Option<String>,
-    }
-    let parsed: LocalPairBody = match serde_json::from_slice(body) {
-        Ok(value) => value,
-        Err(_) => return signed_response(400, json_error("invalid json body"), None),
+    let request = match parse_minted_pair_request(headers, body) {
+        Ok(request) => request,
+        Err(response) => return response,
     };
-    if parsed.auth_version != AUTH_VERSION {
-        return signed_response(400, json_error("unsupported auth_version"), None);
-    }
-    if Uuid::parse_str(&parsed.client_id).is_err() {
-        return signed_response(400, json_error("invalid client_id"), None);
-    }
-    let nonce = match URL_SAFE_NO_PAD
-        .decode(parsed.client_nonce.as_bytes())
-        .ok()
-        .filter(|value| value.len() == 32)
-    {
-        Some(value) => value,
-        None => return signed_response(400, json_error("invalid client_nonce"), None),
-    };
-    let request_nonce = match headers.get("x-harbor-nonce") {
-        Some(value) if value.len() >= 16 => value.clone(),
-        _ => return signed_response(400, json_error("missing pairing nonce"), None),
-    };
-
-    let local_pair_token = random_token();
-    let mut inner = INNER.lock();
-    let key = derive_device_key(
-        &local_pair_token,
-        &inner.server_id,
-        &parsed.client_id,
-        &nonce,
-    );
-    let stored_secret = URL_SAFE_NO_PAD.encode(&key);
-    let record = DeviceRecord {
-        client_id: parsed.client_id.clone(),
-        token: stored_secret.clone(),
-        name: parsed
-            .device_name
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| "Handy".to_string()),
-        created_at: now_unix(),
-        auth_version: 2,
-    };
-    inner.devices.insert(stored_secret, record);
-    if let Err(err) = save_devices(&inner) {
-        log::error!("saving mobile devices: {err:#}");
-    }
-    let host = inner.host.clone();
-    let port = inner.port;
-    let server_id = inner.server_id.clone();
-    drop(inner);
-
-    let endpoints = connection_endpoints(&host, port);
-    let loopback_base = format!("http://127.0.0.1:{port}");
+    let minted = mint_device_credential(&request, "Handy", None);
+    let endpoints = connection_endpoints(&minted.host, minted.port);
+    let loopback_base = format!("http://127.0.0.1:{}", minted.port);
     signed_response(
         200,
         serde_json::json!({
             "base_url": loopback_base,
-            "server_id": server_id,
-            "client_id": parsed.client_id,
-            "local_pair_token": local_pair_token,
+            "server_id": minted.server_id,
+            "client_id": request.client_id,
+            "local_pair_token": minted.pair_token,
             "auth_versions": [AUTH_VERSION],
             "endpoints": endpoints,
         })
         .to_string(),
-        Some(HmacResponseAuth { key, request_nonce }),
+        Some(HmacResponseAuth {
+            key: minted.key,
+            request_nonce: request.request_nonce,
+        }),
+    )
+}
+
+fn pair_tailnet(
+    headers: &HashMap<String, String>,
+    body: &[u8],
+    peer: Option<SocketAddr>,
+) -> HttpResponse {
+    if !crate::harbor_settings::allow_tailnet_pairing() {
+        return signed_response(403, json_error("tailnet pairing is disabled"), None);
+    }
+    // Reject LAN and loopback sources before touching the Tailscale CLI, so a
+    // disabled-by-network request also costs no subprocess.
+    if !is_tailscale_addr(peer) {
+        return signed_response(
+            403,
+            json_error("tailnet pairing needs a tailscale peer"),
+            None,
+        );
+    }
+    let Some(peer_addr) = peer else {
+        return signed_response(
+            403,
+            json_error("tailnet pairing needs a tailscale peer"),
+            None,
+        );
+    };
+    let node = match authorize_tailnet_source(peer_addr.ip()) {
+        TailnetAccess::SameUser(node) => node,
+        TailnetAccess::SelfNode => {
+            return signed_response(
+                403,
+                json_error("tailnet pairing cannot pair a host with itself"),
+                None,
+            )
+        }
+        TailnetAccess::DifferentUser => {
+            return signed_response(
+                403,
+                json_error("tailscale peer belongs to a different user"),
+                None,
+            )
+        }
+        TailnetAccess::Unknown => {
+            return signed_response(403, json_error("tailscale peer is not a known node"), None)
+        }
+        TailnetAccess::NotTailnet => {
+            return signed_response(
+                403,
+                json_error("tailnet pairing needs a tailscale peer"),
+                None,
+            )
+        }
+    };
+    let request = match parse_minted_pair_request(headers, body) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let minted = mint_device_credential(&request, "Harbor peer", Some(&node.id));
+    let endpoints = connection_endpoints(&minted.host, minted.port);
+    signed_response(
+        200,
+        serde_json::json!({
+            "base_url": format!("http://{}:{}", minted.host, minted.port),
+            "server_id": minted.server_id,
+            "client_id": request.client_id,
+            "tailnet_pair_token": minted.pair_token,
+            "auth_versions": [AUTH_VERSION],
+            "endpoints": endpoints,
+        })
+        .to_string(),
+        Some(HmacResponseAuth {
+            key: minted.key,
+            request_nonce: request.request_nonce,
+        }),
     )
 }
 
@@ -1444,6 +1872,7 @@ fn pair(raw_path: &str, headers: &HashMap<String, String>, body: &[u8]) -> HttpR
         name: parsed.device_name.unwrap_or_else(|| "Mobile".to_string()),
         created_at: now_unix(),
         auth_version,
+        tailscale_id: None,
     };
     inner.devices.insert(stored_secret.clone(), record);
     if let Err(err) = save_devices(&inner) {
@@ -3024,6 +3453,28 @@ pub fn pairing_ui_visible() -> bool {
     INNER.lock().pairing_ui_visible
 }
 
+/// Flip the no-code Tailscale pairing policy for desktop peers. The bridge
+/// itself stays untouched; the endpoint reads the setting per request.
+pub fn toggle_tailnet_pairing() -> bool {
+    let enabled = match crate::harbor_settings::toggle_allow_tailnet_pairing() {
+        Ok(enabled) => enabled,
+        Err(err) => {
+            log::error!("saving Tailscale auto-pair setting: {err:#}");
+            crate::harbor_settings::allow_tailnet_pairing()
+        }
+    };
+    // A peer can only reach us once the bridge listens; enabling the policy is
+    // the moment the user expects that to matter.
+    if enabled {
+        ensure_running();
+    }
+    enabled
+}
+
+pub fn tailnet_pairing_enabled() -> bool {
+    crate::harbor_settings::allow_tailnet_pairing()
+}
+
 pub fn refresh_pair_offer() {
     ensure_running();
     let mut inner = INNER.lock();
@@ -3144,6 +3595,182 @@ mod tests {
         assert!(is_tailscale_ipv4("100.127.255.254".parse().unwrap()));
         assert!(!is_tailscale_ipv4("100.63.255.255".parse().unwrap()));
         assert!(!is_tailscale_ipv4("10.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn tailscale_addr_covers_v4_cgnat_and_v6_ula() {
+        assert!(is_tailscale_addr(Some("100.64.0.1:7780".parse().unwrap())));
+        assert!(is_tailscale_addr(Some(
+            "100.127.255.254:7780".parse().unwrap()
+        )));
+        assert!(is_tailscale_addr(Some(
+            "[fd7a:115c:a1e0::1]:7780".parse().unwrap()
+        )));
+        assert!(!is_tailscale_addr(Some(
+            "100.128.0.1:7780".parse().unwrap()
+        )));
+        assert!(!is_tailscale_addr(Some(
+            "192.168.1.20:7780".parse().unwrap()
+        )));
+        assert!(!is_tailscale_addr(Some("127.0.0.1:7780".parse().unwrap())));
+        assert!(!is_tailscale_addr(Some(
+            "[2001:db8::1]:7780".parse().unwrap()
+        )));
+        assert!(!is_tailscale_addr(None));
+    }
+
+    fn fixture_status() -> serde_json::Value {
+        serde_json::json!({
+            "BackendState": "Running",
+            "MagicDNSSuffix": "taile24f86.ts.net",
+            "Self": {
+                "ID": "nse7E65fVN11CNTRL",
+                "HostName": "MacBookAir-g150446",
+                "DNSName": "macbookm1.taile24f86.ts.net.",
+                "UserID": 2116013432887087u64,
+                "TailscaleIPs": ["100.100.155.9", "fd7a:115c:a1e0::7f3a:9b09"],
+            },
+            "Peer": {
+                "nodekey:aaaa": {
+                    "ID": "n5BVcyFxxp11CNTRL",
+                    "HostName": "pc-office",
+                    "DNSName": "pc-office.taile24f86.ts.net.",
+                    "UserID": 2116013432887087u64,
+                    "TailscaleIPs": ["100.108.3.23"],
+                },
+                "nodekey:bbbb": {
+                    "ID": "n99yGuestNode",
+                    "HostName": "guest-laptop",
+                    "DNSName": "guest-laptop.taile24f86.ts.net.",
+                    "UserID": 555u64,
+                    "TailscaleIPs": ["100.77.77.77"],
+                },
+            }
+        })
+    }
+
+    #[test]
+    fn tailscale_snapshot_reads_self_and_peers_from_the_status_document() {
+        let snapshot = tailscale_snapshot_from_status(&fixture_status());
+        assert_eq!(snapshot.self_user_id, "2116013432887087");
+        assert_eq!(snapshot.magic_dns_suffix, "taile24f86.ts.net");
+        let self_node = snapshot.self_node.expect("self node");
+        // The status document reports fully qualified names with a trailing dot.
+        assert_eq!(self_node.dns_name, "macbookm1.taile24f86.ts.net");
+        assert_eq!(self_node.id, "nse7E65fVN11CNTRL");
+        assert_eq!(snapshot.peers.len(), 2);
+    }
+
+    #[test]
+    fn tailscale_snapshot_is_empty_until_the_backend_runs() {
+        let mut status = fixture_status();
+        status["BackendState"] = serde_json::Value::String("Stopped".to_string());
+        let snapshot = tailscale_snapshot_from_status(&status);
+        assert!(snapshot.self_node.is_none());
+        assert!(snapshot.peers.is_empty());
+        assert!(snapshot.self_user_id.is_empty());
+    }
+
+    #[test]
+    fn tailnet_access_grants_only_peers_of_the_same_tailnet_user() {
+        let snapshot = tailscale_snapshot_from_status(&fixture_status());
+        assert!(matches!(
+            decide_tailnet_access(&snapshot, "100.108.3.23".parse().unwrap()),
+            Some(TailnetAccess::SameUser(_))
+        ));
+        assert_eq!(
+            decide_tailnet_access(&snapshot, "100.100.155.9".parse().unwrap()),
+            Some(TailnetAccess::SelfNode)
+        );
+        assert_eq!(
+            decide_tailnet_access(&snapshot, "100.77.77.77".parse().unwrap()),
+            Some(TailnetAccess::DifferentUser)
+        );
+        // An address nobody owns must fall through to the `whois` lookup.
+        assert_eq!(
+            decide_tailnet_access(&snapshot, "100.99.99.99".parse().unwrap()),
+            None
+        );
+    }
+
+    #[test]
+    fn off_tailnet_sources_are_never_authorized() {
+        // These return before any Tailscale CLI call.
+        assert_eq!(
+            authorize_tailnet_source("192.168.1.20".parse().unwrap()),
+            TailnetAccess::NotTailnet
+        );
+        assert_eq!(
+            authorize_tailnet_source("127.0.0.1".parse().unwrap()),
+            TailnetAccess::NotTailnet
+        );
+        assert_eq!(
+            authorize_tailnet_source("[::1]:7780".parse::<SocketAddr>().unwrap().ip()),
+            TailnetAccess::NotTailnet
+        );
+    }
+
+    #[test]
+    fn tailnet_pairing_refuses_a_local_network_requester() {
+        // Whether the opt-in is on or off, a LAN or loopback source is refused
+        // before any credential is minted and without invoking Tailscale.
+        for peer in [
+            Some("192.168.1.10:7780".parse().unwrap()),
+            Some("127.0.0.1:52000".parse().unwrap()),
+            None,
+        ] {
+            assert_eq!(
+                pair_tailnet(&HashMap::new(), b"{}", peer).status,
+                403,
+                "peer {peer:?} must not pair over the tailnet endpoint"
+            );
+        }
+    }
+
+    fn minted_pair_body() -> serde_json::Value {
+        serde_json::json!({
+            "auth_version": AUTH_VERSION,
+            "client_id": "11111111-1111-1111-1111-111111111111",
+            "client_nonce": URL_SAFE_NO_PAD.encode([7u8; 32]),
+            "device_name": "Studio PC",
+        })
+    }
+
+    #[test]
+    fn minted_pair_request_requires_the_full_hmac_shape() {
+        let headers =
+            HashMap::from([("x-harbor-nonce".to_string(), "abcdefghijklmnop".to_string())]);
+        let valid = serde_json::to_vec(&minted_pair_body()).unwrap();
+        let request = parse_minted_pair_request(&headers, &valid).expect("valid request");
+        assert_eq!(request.client_id, "11111111-1111-1111-1111-111111111111");
+        assert_eq!(request.client_nonce, vec![7u8; 32]);
+        assert_eq!(request.request_nonce, "abcdefghijklmnop");
+
+        let status_for = |body: serde_json::Value| {
+            parse_minted_pair_request(&headers, &serde_json::to_vec(&body).unwrap())
+                .expect_err("must reject")
+                .status
+        };
+        let mut wrong_id = minted_pair_body();
+        wrong_id["client_id"] = serde_json::Value::String("not-a-uuid".to_string());
+        assert_eq!(status_for(wrong_id), 400);
+
+        let mut legacy_auth = minted_pair_body();
+        legacy_auth["auth_version"] = serde_json::Value::String("bearer-v1".to_string());
+        assert_eq!(status_for(legacy_auth), 400);
+
+        let mut short_nonce = minted_pair_body();
+        short_nonce["client_nonce"] = serde_json::Value::String("too-short".to_string());
+        assert_eq!(status_for(short_nonce), 400);
+
+        // The response signature is bound to the request nonce header, so a
+        // request without it cannot be verified by the pairing client.
+        assert_eq!(
+            parse_minted_pair_request(&HashMap::new(), &valid)
+                .expect_err("must reject")
+                .status,
+            400
+        );
     }
 
     #[test]

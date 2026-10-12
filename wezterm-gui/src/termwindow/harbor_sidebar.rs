@@ -405,6 +405,56 @@ impl crate::TermWindow {
                 text: teal.into(),
             })),
         );
+        children.push(
+            wrapped_text_element(
+                &font,
+                "⇄  Pair via Tailscale (clipboard)",
+                max_cols,
+                pair_colors.clone(),
+            )
+            .item_type(UIItemType::HarborPairPeerTailscale)
+            .line_height(Some(1.55))
+            .padding(BoxDimension {
+                left: Dimension::Pixels(16.),
+                right: Dimension::Pixels(12.),
+                top: Dimension::Pixels(2.),
+                bottom: Dimension::Pixels(2.),
+            })
+            .min_width(Some(Dimension::Pixels(content_width)))
+            .max_width(Some(Dimension::Pixels(content_width)))
+            .hover_colors(Some(ElementColors {
+                border: BorderColor::default(),
+                bg: LinearRgba(0.035, 0.09, 0.12, 0.96).into(),
+                text: teal.into(),
+            })),
+        );
+
+        // The switch governs this machine as a host, so it reads as the state
+        // peers see when they reach the bridge.
+        let tailnet_label = if harbor_mobile::tailnet_pairing_enabled() {
+            "🔓  Tailscale auto-pair: on"
+        } else {
+            "🔒  Tailscale auto-pair: off"
+        };
+        children.push(
+            wrapped_text_element(&font, tailnet_label, max_cols, pair_colors.clone())
+                .item_type(UIItemType::HarborToggleTailnetPair)
+                .line_height(Some(1.55))
+                .padding(BoxDimension {
+                    left: Dimension::Pixels(16.),
+                    right: Dimension::Pixels(12.),
+                    top: Dimension::Pixels(2.),
+                    bottom: Dimension::Pixels(6.),
+                })
+                .min_width(Some(Dimension::Pixels(content_width)))
+                .max_width(Some(Dimension::Pixels(content_width)))
+                .hover_colors(Some(ElementColors {
+                    border: BorderColor::default(),
+                    bg: LinearRgba(0.035, 0.09, 0.12, 0.96).into(),
+                    text: teal.into(),
+                })),
+        );
+
         if let Some(status) = harbor_peer::pair_status() {
             children.push(
                 wrapped_text_element(
@@ -734,23 +784,43 @@ impl crate::TermWindow {
         promise::spawn::spawn(future).detach();
     }
 
-    pub fn harbor_pair_peer_from_clipboard(&mut self, context: &dyn window::WindowOps) {
+    /// Pair using the clipboard content. The sidebar has no dialog to show, so
+    /// a failure lands in the log and in the peer status line.
+    fn harbor_pair_with_clipboard(
+        context: &dyn window::WindowOps,
+        pair: fn(&str) -> anyhow::Result<()>,
+        what: &'static str,
+    ) {
         let future = context.get_clipboard(window::Clipboard::Clipboard);
         promise::spawn::spawn(async move {
             match future.await {
                 Ok(text) => {
                     promise::spawn::spawn_into_new_thread(move || {
-                        if let Err(err) = crate::harbor_peer::pair_from_uri(&text) {
+                        if let Err(err) = pair(&text) {
                             log::error!("pairing another Harbor: {err:#}");
                         }
                         Ok::<(), anyhow::Error>(())
                     })
                     .detach();
                 }
-                Err(err) => log::error!("reading pair URI from clipboard: {err:#}"),
+                Err(err) => log::error!("reading {what} from clipboard: {err:#}"),
             }
         })
         .detach();
+    }
+
+    pub fn harbor_pair_peer_from_clipboard(&mut self, context: &dyn window::WindowOps) {
+        Self::harbor_pair_with_clipboard(context, crate::harbor_peer::pair_from_uri, "pair URI");
+    }
+
+    /// The no-code path: the clipboard holds a Tailscale device id instead of a
+    /// pair URI. A URI is still accepted, so both rows work with either input.
+    pub fn harbor_pair_peer_tailscale_from_clipboard(&mut self, context: &dyn window::WindowOps) {
+        Self::harbor_pair_with_clipboard(
+            context,
+            crate::harbor_peer::pair_from_text,
+            "Tailscale device id",
+        );
     }
 }
 

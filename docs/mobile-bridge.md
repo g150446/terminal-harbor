@@ -47,9 +47,16 @@ binary mux protocol — keep it that way so the app stays simple and portable.
    still exchange the raw token for a bearer token.
 4. New apps sign method, request target, timestamp, nonce, and body hash. The
    bridge rejects stale/replayed nonces and signs every response.
+5. A Harbor desktop peer can skip the one-time token when the host opts in; see
+   [`harbor-peers.md`](harbor-peers.md). `POST /v1/pair/tailnet` accepts an
+   unsigned request only from a Tailscale address whose node belongs to the
+   same Tailscale user, and mints the credential host-side the way
+   `/v1/pair/local` does for loopback. The mobile app never calls it, and it is
+   off by default.
 
 The bridge persists a `server_id` and per-device `client_id` in
-`mobile-devices.json`. Existing records receive IDs on first load. It advertises
+`mobile-devices.json`, along with the Tailscale node id for peers that paired
+without a code. Existing records receive IDs on first load. It advertises
 `_terminal-harbor._tcp.local.` with public `sid`, API, and auth TXT fields. The
 mobile app accepts a discovered address only after its signed `/v1/identity`
 response verifies for the saved server ID.
@@ -86,6 +93,7 @@ Full contract: `openapi/harbor-mobile.yaml` in the mobile repo.
 |---|---|---|
 | POST | `/v1/pair` | No auth. One-time token → device token |
 | POST | `/v1/pair/local` | Loopback only. Same-machine HMAC pair without QR (Handy) |
+| POST | `/v1/pair/tailnet` | Harbor desktop peers only, opt-in and off by default. Same-Tailscale-user pair with no pairing code; the mobile app never calls it |
 | GET | `/v1/identity` | Stable server identity; signed for authenticated clients |
 | GET | `/v1/session` | Connection check plus desktop identity metadata |
 | GET | `/v1/workspaces` | Workspace list with activity state |

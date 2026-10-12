@@ -246,7 +246,7 @@ When troubleshooting a stale label:
 |---|---|
 | `wezterm-gui/src/harbor_workspace.rs` | Directory resolution, fallback order, agent/activity aggregation, `KNOWN_AGENTS`, title normalization, and `HarborWorkspaceRow` |
 | `wezterm-gui/src/termwindow/harbor_sidebar.rs` | Detail-line formatting, truncation, wrapping, colors, row rendering, and remote peer rows |
-| `wezterm-gui/src/harbor_peer.rs` | HMAC client, clipboard pairing, and `paired-desktops.json` |
+| `wezterm-gui/src/harbor_peer.rs` | HMAC client, clipboard pairing, Tailscale device-id resolution, and `paired-desktops.json` |
 | `wezterm-gui/src/overlay/harbor_remote.rs` | Remote screen overlay and allowlisted key forwarding |
 | `wezterm-gui/src/termwindow/mod.rs` | Mux notification handling, `harbor_pane_titles`, and sidebar cache invalidation |
 | `README.md` | User-facing display behavior |
@@ -295,13 +295,20 @@ checked against it:
 
 ## Remote Harbor peers
 
-A paired Mac appears as a host heading under **Pair another Harbor**. Its
+A paired Harbor appears as a host heading under **Pair another Harbor**. Its
 workspace rows use the same activity glyph and directory basename as local
 rows, without the 1-based index prefix. They must not run `SwitchToWorkspace`
 locally: a click opens the remote screen overlay and sends input over the
 mobile bridge. Full remote paths stay
-off the sidebar. Pair URIs, tokens, and secrets stay out of the sidebar, logs,
-and commits. See [`harbor-peers.md`](harbor-peers.md).
+off the sidebar. Pair URIs, tokens, Tailscale node ids, and secrets stay out of
+the sidebar, logs, and commits. See [`harbor-peers.md`](harbor-peers.md).
+
+Two rows sit under **Pair another Harbor**: **Pair via Tailscale (clipboard)**
+pairs by device id with no pairing code, and **Tailscale auto-pair: on/off**
+is this machine's host-side opt-in for that path. The toggle label states the
+policy this machine serves, not a connection state, and the default is off. A
+fallback to the local network still requires the explicit **Use local network**
+click; a tailnet pairing never shows LAN as already agreed.
 
 Unit tests should continue covering basename extraction (including `/` and
 non-ASCII paths), `KNOWN_AGENTS` matching, spinner stripping, uninformative

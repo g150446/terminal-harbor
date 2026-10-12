@@ -46,6 +46,8 @@ impl super::TermWindow {
             | UIItemType::HarborOpenPairQr
             | UIItemType::HarborCopyPairUri
             | UIItemType::HarborPairPeer
+            | UIItemType::HarborPairPeerTailscale
+            | UIItemType::HarborToggleTailnetPair
             | UIItemType::HarborConfirmLan(_)
             | UIItemType::HarborUnpairPeer(_)
             | UIItemType::HarborRemoteWorkspace { .. } => {}
@@ -67,6 +69,8 @@ impl super::TermWindow {
             | UIItemType::HarborOpenPairQr
             | UIItemType::HarborCopyPairUri
             | UIItemType::HarborPairPeer
+            | UIItemType::HarborPairPeerTailscale
+            | UIItemType::HarborToggleTailnetPair
             | UIItemType::HarborConfirmLan(_)
             | UIItemType::HarborUnpairPeer(_)
             | UIItemType::HarborRemoteWorkspace { .. } => {}
@@ -447,6 +451,19 @@ impl super::TermWindow {
             UIItemType::HarborPairPeer => {
                 if matches!(event.kind, WMEK::Press(MousePress::Left)) {
                     self.harbor_pair_peer_from_clipboard(context);
+                }
+                context.set_cursor(Some(MouseCursor::Arrow));
+            }
+            UIItemType::HarborPairPeerTailscale => {
+                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
+                    self.harbor_pair_peer_tailscale_from_clipboard(context);
+                }
+                context.set_cursor(Some(MouseCursor::Arrow));
+            }
+            UIItemType::HarborToggleTailnetPair => {
+                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
+                    crate::harbor_mobile::toggle_tailnet_pairing();
+                    self.invalidate_harbor_sidebar();
                 }
                 context.set_cursor(Some(MouseCursor::Arrow));
             }

@@ -5,7 +5,8 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
+const MIN_SUPPORTED_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_FONT_SCALE: f64 = 1.0;
 const DEFAULT_VOICE_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_VOICE_MODEL: &str = "deepseek/deepseek-v4-flash-0731";
@@ -43,6 +44,10 @@ struct PersistedSettings {
         skip_serializing_if = "String::is_empty"
     )]
     openrouter_api_key: String,
+    /// Desktop peers may pair over Tailscale without a pairing code while this
+    /// is on. Off by default: the pairing URI stays the normal path.
+    #[serde(default)]
+    allow_tailnet_pairing: bool,
 }
 
 impl Default for PersistedSettings {
@@ -54,6 +59,7 @@ impl Default for PersistedSettings {
             voice_model: default_voice_model(),
             voice_timeout_ms: default_voice_timeout_ms(),
             openrouter_api_key: default_openrouter_api_key(),
+            allow_tailnet_pairing: false,
         }
     }
 }
@@ -97,6 +103,7 @@ fn is_legacy_ollama_url(url: &str) -> bool {
 }
 
 fn migrate_loaded(mut state: PersistedSettings) -> PersistedSettings {
+    state.schema_version = SCHEMA_VERSION;
     let was_ollama = is_legacy_ollama_url(&state.voice_base_url);
     if was_ollama || state.voice_base_url.trim().is_empty() {
         state.voice_base_url = default_voice_base_url();
@@ -200,7 +207,8 @@ fn load_from_path(path: &Path) -> PersistedSettings {
 
     match serde_json::from_slice::<PersistedSettings>(&data) {
         Ok(state)
-            if state.schema_version == SCHEMA_VERSION && valid_font_scale(state.font_scale) =>
+            if (MIN_SUPPORTED_SCHEMA_VERSION..=SCHEMA_VERSION).contains(&state.schema_version)
+                && valid_font_scale(state.font_scale) =>
         {
             migrate_loaded(state)
         }
@@ -265,6 +273,27 @@ pub fn voice_model_settings() -> VoiceModelSettings {
     }
 }
 
+/// Whether this host accepts pairing requests from Tailscale peers of the same
+/// Tailscale user without a one-time pairing code.
+pub fn allow_tailnet_pairing() -> bool {
+    let mut registry = REGISTRY.lock();
+    load_if_needed(&mut registry);
+    registry.state.allow_tailnet_pairing
+}
+
+pub fn set_allow_tailnet_pairing(enabled: bool) -> anyhow::Result<()> {
+    let mut registry = REGISTRY.lock();
+    load_if_needed(&mut registry);
+    registry.state.allow_tailnet_pairing = enabled;
+    save_to_path(&settings_path(), &registry.state)
+}
+
+pub fn toggle_allow_tailnet_pairing() -> anyhow::Result<bool> {
+    let enabled = !allow_tailnet_pairing();
+    set_allow_tailnet_pairing(enabled)?;
+    Ok(enabled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +343,50 @@ mod tests {
         assert_eq!(state.voice_model, DEFAULT_VOICE_MODEL);
         assert_eq!(state.voice_timeout_ms, DEFAULT_VOICE_TIMEOUT_MS);
         assert!(state.openrouter_api_key.is_empty());
+        assert!(!state.allow_tailnet_pairing);
+    }
+
+    #[test]
+    fn version_one_settings_keep_their_values_after_the_schema_bump() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings-v1.json");
+        fs::write(
+            &path,
+            br#"{"schema_version":1,"font_scale":1.5,"voice_model":"m","voice_timeout_ms":4000,"openrouter_api_key":"sk-or"}"#,
+        )
+        .unwrap();
+        let state = load_from_path(&path);
+        assert_eq!(state.font_scale, 1.5);
+        assert_eq!(state.voice_model, "m");
+        assert_eq!(state.voice_timeout_ms, 4000);
+        assert_eq!(state.openrouter_api_key, "sk-or");
+    }
+
+    #[test]
+    fn tailnet_pairing_default_is_off_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings-v1.json");
+        assert!(!load_from_path(&path).allow_tailnet_pairing);
+
+        let state = PersistedSettings {
+            schema_version: SCHEMA_VERSION,
+            font_scale: 1.0,
+            voice_base_url: default_voice_base_url(),
+            voice_model: default_voice_model(),
+            voice_timeout_ms: DEFAULT_VOICE_TIMEOUT_MS,
+            openrouter_api_key: default_openrouter_api_key(),
+            allow_tailnet_pairing: true,
+        };
+        save_to_path(&path, &state).unwrap();
+        assert!(load_from_path(&path).allow_tailnet_pairing);
+    }
+
+    #[test]
+    fn migrated_settings_rewrite_the_current_schema_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings-v1.json");
+        fs::write(&path, br#"{"schema_version":1,"font_scale":1.25}"#).unwrap();
+        assert_eq!(load_from_path(&path).schema_version, SCHEMA_VERSION);
     }
 
     #[test]
