@@ -32,7 +32,7 @@ user, the code can be skipped.
    name while the stored `schema_version` moves to 2, and version 1 files still
    load with the switch off).
 2. On the controlling machine, copy the peer's MagicDNS name
-   (`pc-office.taile24f86.ts.net`; its Tailscale machine name or one of its
+   (`pc-office.tailnet-abc123.ts.net`; its Tailscale machine name or one of its
    tailnet addresses also resolve) and click **Pair via Tailscale (clipboard)**.
    A `harbor://pair` URI on the clipboard still works from this row.
 

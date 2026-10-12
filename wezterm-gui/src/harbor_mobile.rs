@@ -3622,26 +3622,26 @@ mod tests {
     fn fixture_status() -> serde_json::Value {
         serde_json::json!({
             "BackendState": "Running",
-            "MagicDNSSuffix": "taile24f86.ts.net",
+            "MagicDNSSuffix": "tailnet-abc123.ts.net",
             "Self": {
-                "ID": "nse7E65fVN11CNTRL",
-                "HostName": "MacBookAir-g150446",
-                "DNSName": "macbookm1.taile24f86.ts.net.",
-                "UserID": 2116013432887087u64,
-                "TailscaleIPs": ["100.100.155.9", "fd7a:115c:a1e0::7f3a:9b09"],
+                "ID": "nSelfExample000",
+                "HostName": "laptop-host",
+                "DNSName": "laptop.tailnet-abc123.ts.net.",
+                "UserID": 1122334455667788u64,
+                "TailscaleIPs": ["100.64.0.10", "fd7a:115c:a1e0::1"],
             },
             "Peer": {
                 "nodekey:aaaa": {
-                    "ID": "n5BVcyFxxp11CNTRL",
+                    "ID": "nPeerExample000",
                     "HostName": "pc-office",
-                    "DNSName": "pc-office.taile24f86.ts.net.",
-                    "UserID": 2116013432887087u64,
-                    "TailscaleIPs": ["100.108.3.23"],
+                    "DNSName": "pc-office.tailnet-abc123.ts.net.",
+                    "UserID": 1122334455667788u64,
+                    "TailscaleIPs": ["100.64.0.20"],
                 },
                 "nodekey:bbbb": {
-                    "ID": "n99yGuestNode",
+                    "ID": "nGuestExample000",
                     "HostName": "guest-laptop",
-                    "DNSName": "guest-laptop.taile24f86.ts.net.",
+                    "DNSName": "guest-laptop.tailnet-abc123.ts.net.",
                     "UserID": 555u64,
                     "TailscaleIPs": ["100.77.77.77"],
                 },
@@ -3652,12 +3652,12 @@ mod tests {
     #[test]
     fn tailscale_snapshot_reads_self_and_peers_from_the_status_document() {
         let snapshot = tailscale_snapshot_from_status(&fixture_status());
-        assert_eq!(snapshot.self_user_id, "2116013432887087");
-        assert_eq!(snapshot.magic_dns_suffix, "taile24f86.ts.net");
+        assert_eq!(snapshot.self_user_id, "1122334455667788");
+        assert_eq!(snapshot.magic_dns_suffix, "tailnet-abc123.ts.net");
         let self_node = snapshot.self_node.expect("self node");
         // The status document reports fully qualified names with a trailing dot.
-        assert_eq!(self_node.dns_name, "macbookm1.taile24f86.ts.net");
-        assert_eq!(self_node.id, "nse7E65fVN11CNTRL");
+        assert_eq!(self_node.dns_name, "laptop.tailnet-abc123.ts.net");
+        assert_eq!(self_node.id, "nSelfExample000");
         assert_eq!(snapshot.peers.len(), 2);
     }
 
@@ -3675,11 +3675,11 @@ mod tests {
     fn tailnet_access_grants_only_peers_of_the_same_tailnet_user() {
         let snapshot = tailscale_snapshot_from_status(&fixture_status());
         assert!(matches!(
-            decide_tailnet_access(&snapshot, "100.108.3.23".parse().unwrap()),
+            decide_tailnet_access(&snapshot, "100.64.0.20".parse().unwrap()),
             Some(TailnetAccess::SameUser(_))
         ));
         assert_eq!(
-            decide_tailnet_access(&snapshot, "100.100.155.9".parse().unwrap()),
+            decide_tailnet_access(&snapshot, "100.64.0.10".parse().unwrap()),
             Some(TailnetAccess::SelfNode)
         );
         assert_eq!(

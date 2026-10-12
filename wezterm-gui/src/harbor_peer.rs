@@ -1329,31 +1329,31 @@ mod tests {
     /// foreign-user laptop.
     fn fixture_snapshot() -> TailscaleSnapshot {
         TailscaleSnapshot {
-            self_user_id: "2116013432887087".to_string(),
+            self_user_id: "1122334455667788".to_string(),
             self_node: Some(fixture_node(
-                "nse7E65fVN11CNTRL",
-                "MacBookAir-g150446",
-                "macbookm1.taile24f86.ts.net",
-                "2116013432887087",
-                &["100.100.155.9", "fd7a:115c:a1e0::7f3a:9b09"],
+                "nSelfExample000",
+                "laptop-host",
+                "laptop.tailnet-abc123.ts.net",
+                "1122334455667788",
+                &["100.64.0.10", "fd7a:115c:a1e0::1"],
             )),
             peers: vec![
                 fixture_node(
-                    "n5BVcyFxxp11CNTRL",
+                    "nPeerExample000",
                     "pc-office",
-                    "pc-office.taile24f86.ts.net",
-                    "2116013432887087",
-                    &["100.108.3.23", "fd7a:115c:a1e0::3f32:318"],
+                    "pc-office.tailnet-abc123.ts.net",
+                    "1122334455667788",
+                    &["100.64.0.20", "fd7a:115c:a1e0::2"],
                 ),
                 fixture_node(
-                    "n99yGuestNode",
+                    "nGuestExample000",
                     "guest-laptop",
-                    "guest-laptop.taile24f86.ts.net",
+                    "guest-laptop.tailnet-abc123.ts.net",
                     "555",
                     &["100.77.77.77"],
                 ),
             ],
-            magic_dns_suffix: "taile24f86.ts.net".to_string(),
+            magic_dns_suffix: "tailnet-abc123.ts.net".to_string(),
         }
     }
 
@@ -1367,26 +1367,26 @@ mod tests {
     #[test]
     fn tailscale_id_normalizes_the_pasted_forms() {
         assert_eq!(
-            normalize_tailscale_id("  PC-Office.taile24f86.ts.net. "),
-            "pc-office.taile24f86.ts.net"
+            normalize_tailscale_id("  PC-Office.tailnet-abc123.ts.net. "),
+            "pc-office.tailnet-abc123.ts.net"
         );
         assert_eq!(
-            normalize_tailscale_id("http://pc-office.taile24f86.ts.net:7780/"),
-            "pc-office.taile24f86.ts.net"
+            normalize_tailscale_id("http://pc-office.tailnet-abc123.ts.net:7780/"),
+            "pc-office.tailnet-abc123.ts.net"
         );
-        assert_eq!(normalize_tailscale_id("100.108.3.23:7780"), "100.108.3.23");
+        assert_eq!(normalize_tailscale_id("100.64.0.20:7780"), "100.64.0.20");
         assert_eq!(
-            normalize_tailscale_id("[fd7a:115c:a1e0::3f32:318]:7780"),
-            "fd7a:115c:a1e0::3f32:318"
+            normalize_tailscale_id("[fd7a:115c:a1e0::2]:7780"),
+            "fd7a:115c:a1e0::2"
         );
         assert_eq!(
-            normalize_tailscale_id("[fd7a:115c:a1e0::3f32:318]"),
-            "fd7a:115c:a1e0::3f32:318"
+            normalize_tailscale_id("[fd7a:115c:a1e0::2]"),
+            "fd7a:115c:a1e0::2"
         );
         // An unbracketed IPv6 must keep its groups.
         assert_eq!(
-            normalize_tailscale_id("fd7a:115c:a1e0::3f32:318"),
-            "fd7a:115c:a1e0::3f32:318"
+            normalize_tailscale_id("fd7a:115c:a1e0::2"),
+            "fd7a:115c:a1e0::2"
         );
     }
 
@@ -1394,26 +1394,26 @@ mod tests {
     fn tailscale_id_resolves_by_name_or_by_address() {
         let snapshot = fixture_snapshot();
         for pasted in [
-            "pc-office.taile24f86.ts.net",
-            "PC-Office.taile24f86.ts.net.",
+            "pc-office.tailnet-abc123.ts.net",
+            "PC-Office.tailnet-abc123.ts.net.",
             "pc-office",
-            "100.108.3.23",
-            "http://pc-office.taile24f86.ts.net:7780",
+            "100.64.0.20",
+            "http://pc-office.tailnet-abc123.ts.net:7780",
         ] {
             let needle = normalize_tailscale_id(pasted);
             let endpoints = tailnet_endpoints_for_id(&needle, &snapshot)
                 .unwrap_or_else(|err| panic!("{} must resolve: {}", pasted, err));
             let urls = endpoint_urls(&endpoints);
             assert!(
-                urls.contains(&"http://100.108.3.23:7780".to_string()),
+                urls.contains(&"http://100.64.0.20:7780".to_string()),
                 "{pasted} resolved to {urls:?}"
             );
             assert!(
-                urls.contains(&"http://[fd7a:115c:a1e0::3f32:318]:7780".to_string()),
+                urls.contains(&"http://[fd7a:115c:a1e0::2]:7780".to_string()),
                 "{pasted} resolved to {urls:?}"
             );
             assert!(
-                urls.contains(&"http://pc-office.taile24f86.ts.net:7780".to_string()),
+                urls.contains(&"http://pc-office.tailnet-abc123.ts.net:7780".to_string()),
                 "{pasted} resolved to {urls:?}"
             );
             assert!(
@@ -1428,7 +1428,7 @@ mod tests {
     #[test]
     fn tailscale_id_refuses_this_machine_and_ambiguous_names() {
         let snapshot = fixture_snapshot();
-        let error = tailnet_endpoints_for_id("macbookm1.taile24f86.ts.net", &snapshot)
+        let error = tailnet_endpoints_for_id("laptop.tailnet-abc123.ts.net", &snapshot)
             .expect_err("pairing with yourself is not a peer");
         assert!(error.to_string().contains("this Terminal Harbor instance"));
 
@@ -1437,7 +1437,7 @@ mod tests {
             "nOtherOffice",
             "pc-office",
             "pc-office.other-tailnet.ts.net",
-            "2116013432887087",
+            "1122334455667788",
             &["100.9.9.9"],
         ));
         let error =
@@ -1453,13 +1453,13 @@ mod tests {
         let endpoints = tailnet_endpoints_for_id("new-studio", &snapshot).expect("MagicDNS guess");
         assert_eq!(
             endpoint_urls(&endpoints),
-            vec!["http://new-studio.taile24f86.ts.net:7780".to_string()]
+            vec!["http://new-studio.tailnet-abc123.ts.net:7780".to_string()]
         );
 
-        let endpoints = tailnet_endpoints_for_id("100.108.99.9", &snapshot).expect("bare address");
+        let endpoints = tailnet_endpoints_for_id("100.64.0.99", &snapshot).expect("bare address");
         assert_eq!(
             endpoint_urls(&endpoints),
-            vec!["http://100.108.99.9:7780".to_string()]
+            vec!["http://100.64.0.99:7780".to_string()]
         );
 
         let mut no_magic_dns = fixture_snapshot();
@@ -1472,7 +1472,7 @@ mod tests {
     fn clipboard_text_splits_the_pair_uri_from_a_device_id() {
         assert!(is_pair_uri("harbor://pair?v=1&host=192.168.1.20"));
         assert!(is_pair_uri("  harbor://pair?v=1"));
-        assert!(!is_pair_uri("pc-office.taile24f86.ts.net"));
+        assert!(!is_pair_uri("pc-office.tailnet-abc123.ts.net"));
         assert!(!is_pair_uri("https://example.com"));
     }
 }

@@ -30,8 +30,11 @@ ANGLE dylib 3種は新 `wezterm-gui` が `otool -L` で参照しないことを�
 完成バンドルへ含めていない。
 
 `API_VERSION` は 1.12.0 のまま。mobile app が呼ぶ契約は無変更で、新 endpoint は
-desktop peer 専用。OpenAPI 文書側だけ 1.4.0 に上げ、`TailnetPairResponse` を
-追加した（mobile repo 側の同一作業コミット）。
+desktop peer 専用。mobile repo の OpenAPI 契約へ `/v1/pair/tailnet` と
+`TailnetPairResponse` を追加したが、`info.version` は desktop が広告しない値を
+書けないよう 1.11.0 のまま据え置いた（契約変更の都上げていく運用には見えない。
+なお upstream は `POST /v1/pair/local` を既に文書化しているため、bridge 専用
+endpoint を契約へ載せる做法とは矛盾しない）。mobile repo 側は別コミット・別 push。
 
 配置後の受け入れ確認:
 - GUI 48381→50465、mux 42003 は継続（保持再起動どおり）。
@@ -55,6 +58,15 @@ off へ戻すこと。
 提案した既存の折り返し6箇所（mobile 5・sidebar import 1）は本次変更と無関係なので
 HEAD の形に戻した。よって `cargo +nightly fmt --all -- --check` はこの6箇所について
 は本次変更前と同じ失敗のまま（改善も悪化もさせていない）。
+
+**追記（同一作業の後始末）:** 上記コミットのテスト fixture と doc 例に、この実機の
+MagicDNS サフィックス・ノードID・tailnet user ID・ホスト名・CGNATアドレスを
+そのまま書いていたため、後のコミットで全て合成値へ置換した（`tailnet-abc123.ts.net`、
+`nSelfExample000`、`100.64.0.10` 等）。置換対象は `#[cfg(test)]` 内と markdown のみで、
+配布バイナリのコードは無変更 → 上のハッシュと配置記録はそのまま有効。置換後も
+`cargo +stable test -p wezterm-gui harbor` は136件合格。実機識別子の漏出は
+`maintenance.md`「内容、バックアップ、pair URIをログ、issue、…コミットへ含めない」に
+反するため、以後 fixture は合成値を使うこと。
 
 ## 2026-10-11 16:44 — origin/main の一括反映（peer pair・plan・transcript・日本語フォールバック等、mux込み）
 
