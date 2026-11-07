@@ -23,7 +23,7 @@ use std::io::{Result as IoResult, Write};
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use termwiz::escape::csi::{CSI, Sgr};
+use termwiz::escape::csi::{CSI, DecPrivateMode, DecPrivateModeCode, Mode, Sgr};
 use termwiz::escape::{Action, DeviceControlMode};
 use termwiz::input::KeyboardEncoding;
 use termwiz::surface::{Line, SequenceNo};
@@ -141,6 +141,11 @@ pub struct LocalPane {
     proc_list: Mutex<Option<CachedProcInfo>>,
     #[cfg(unix)]
     leader: Arc<Mutex<Option<CachedLeaderInfo>>>,
+    /// Whether the foreground process group was the pane's own shell when
+    /// last observed; `None` until the first observation. See
+    /// `harbor_release_stale_mouse_modes`.
+    #[cfg(unix)]
+    harbor_foreground_was_shell: Mutex<Option<bool>>,
     command_description: String,
 }
 
@@ -402,6 +407,13 @@ impl Pane for LocalPane {
 
     fn mouse_event(&self, event: MouseEvent) -> Result<(), Error> {
         Mux::get().record_input_for_current_identity();
+        // Check before encoding, so a mode left behind by a dead program is
+        // not turned into input for the shell. Only worth asking about the
+        // foreground while some mouse mode is actually on.
+        let grabbed = self.terminal.lock().is_mouse_grabbed();
+        if grabbed {
+            self.harbor_release_stale_mouse_modes();
+        }
         self.terminal.lock().mouse_event(event)
     }
 
@@ -991,6 +1003,47 @@ impl AlertHandler for LocalPaneNotifHandler {
 /// to terminate, and then nudge the muxer to check for dead processes.
 /// Without this, typing `exit` in `cmd.exe` would keep the pane around
 /// until something else triggered the mux to prune dead processes.
+/// Decide whether the mouse modes are stale, given the previous observation.
+///
+/// Returns the observation to remember and whether to release. A foreground
+/// pid of 0 means `tcgetpgrp` failed, and tells us nothing.
+fn stale_mouse_release_due(
+    was_shell: Option<bool>,
+    foreground_pid: u32,
+    shell_pid: Option<u32>,
+) -> (Option<bool>, bool) {
+    let Some(shell_pid) = shell_pid else {
+        return (was_shell, false);
+    };
+    if foreground_pid == 0 {
+        return (was_shell, false);
+    }
+    let is_shell = foreground_pid == shell_pid;
+    (Some(is_shell), is_shell && was_shell == Some(false))
+}
+
+/// The private modes that make the terminal send mouse or focus reports, and
+/// the mouse encodings that go with them. Bracketed paste is deliberately not
+/// here: the shell's line editor turns that on itself.
+fn stale_mouse_mode_resets() -> Vec<Action> {
+    [
+        DecPrivateModeCode::MouseTracking,
+        DecPrivateModeCode::ButtonEventMouse,
+        DecPrivateModeCode::AnyEventMouse,
+        DecPrivateModeCode::FocusTracking,
+        DecPrivateModeCode::Utf8Mouse,
+        DecPrivateModeCode::SGRMouse,
+        DecPrivateModeCode::SGRPixelsMouse,
+    ]
+    .iter()
+    .map(|code| {
+        Action::CSI(CSI::Mode(Mode::ResetDecPrivateMode(DecPrivateMode::Code(
+            code.clone(),
+        ))))
+    })
+    .collect()
+}
+
 fn split_child(
     mut process: Box<dyn Child>,
 ) -> (
@@ -1050,6 +1103,8 @@ impl LocalPane {
             proc_list: Mutex::new(None),
             #[cfg(unix)]
             leader: Arc::new(Mutex::new(None)),
+            #[cfg(unix)]
+            harbor_foreground_was_shell: Mutex::new(None),
             command_description,
         }
     }
@@ -1063,6 +1118,56 @@ impl LocalPane {
     pub fn session_process_tree(&self, policy: CachePolicy) -> Option<LocalProcessInfo> {
         self.divine_process_list(policy)
             .map(|info| info.root.clone())
+    }
+
+    /// Turn off mouse reporting that a foreground program left behind.
+    ///
+    /// Programs such as tmux turn mouse reporting on and turn it off again as
+    /// they exit. When they never get that chance — typically an ssh session
+    /// to a remote tmux that drops on a network timeout — the pane stays in
+    /// that mode, and every pointer movement reaches the shell as an SGR mouse
+    /// report that the line editor echoes as `35;49;11M35;48;8M...`. A shell
+    /// at its prompt does not ask for mouse reports, so when the foreground
+    /// returns from another program to the pane's own shell, any mouse mode
+    /// still on is stale.
+    ///
+    /// Only that transition counts. While the shell simply stays in front
+    /// nothing is touched, so a mode a user turns on deliberately survives.
+    /// Returns true when the modes were turned off.
+    pub fn harbor_release_stale_mouse_modes(&self) -> bool {
+        #[cfg(unix)]
+        {
+            if self.tmux_domain.lock().is_some() {
+                return false;
+            }
+            let shell_pid = match &*self.process.lock() {
+                ProcessState::Running { pid, .. } => *pid,
+                _ => None,
+            };
+            // A stale read is fine: the cache refreshes within its TTL, and
+            // this is called again on the next output or mouse event.
+            let foreground_pid = self.get_leader(CachePolicy::AllowStale).pid;
+            let release = {
+                let mut was_shell = self.harbor_foreground_was_shell.lock();
+                let (next, release) =
+                    stale_mouse_release_due(*was_shell, foreground_pid, shell_pid);
+                *was_shell = next;
+                release
+            };
+            if release {
+                let mut terminal = self.terminal.lock();
+                if terminal.is_mouse_grabbed() {
+                    log::info!(
+                        "pane {}: foreground returned to the shell with mouse reporting \
+                         still on; turning it off",
+                        self.pane_id
+                    );
+                    terminal.perform_actions(stale_mouse_mode_resets());
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     #[cfg(unix)]
@@ -1184,5 +1289,68 @@ impl Drop for LocalPane {
         if let ProcessState::Running { signaller, .. } = &mut *self.process.lock() {
             let _ = signaller.kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod harbor_mouse_tests {
+    use super::*;
+
+    const SHELL: u32 = 100;
+    const SSH: u32 = 200;
+
+    #[test]
+    fn returning_from_another_program_to_the_shell_releases() {
+        let (state, _) = stale_mouse_release_due(None, SHELL, Some(SHELL));
+        let (state, release) = stale_mouse_release_due(state, SSH, Some(SHELL));
+        assert!(!release);
+        let (state, release) = stale_mouse_release_due(state, SHELL, Some(SHELL));
+        assert!(release);
+        assert_eq!(state, Some(true));
+    }
+
+    #[test]
+    fn a_shell_that_stays_in_front_is_left_alone() {
+        let (state, release) = stale_mouse_release_due(None, SHELL, Some(SHELL));
+        assert!(!release);
+        let (_, release) = stale_mouse_release_due(state, SHELL, Some(SHELL));
+        assert!(!release);
+    }
+
+    #[test]
+    fn a_program_in_front_is_never_released() {
+        let (state, _) = stale_mouse_release_due(Some(true), SSH, Some(SHELL));
+        let (_, release) = stale_mouse_release_due(state, SSH, Some(SHELL));
+        assert!(!release);
+    }
+
+    #[test]
+    fn a_failed_lookup_keeps_the_previous_observation() {
+        let (state, release) = stale_mouse_release_due(Some(false), 0, Some(SHELL));
+        assert!(!release);
+        assert_eq!(state, Some(false));
+        let (_, release) = stale_mouse_release_due(state, SHELL, Some(SHELL));
+        assert!(release);
+    }
+
+    #[test]
+    fn no_shell_pid_means_no_decision() {
+        let (state, release) = stale_mouse_release_due(Some(false), SHELL, None);
+        assert!(!release);
+        assert_eq!(state, Some(false));
+    }
+
+    #[test]
+    fn resets_cover_mouse_and_focus_but_not_bracketed_paste() {
+        let encoded: String = stale_mouse_mode_resets()
+            .iter()
+            .map(|action| action.to_string())
+            .collect();
+        assert_eq!(
+            encoded,
+            "\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1003l\u{1b}[?1004l\
+             \u{1b}[?1005l\u{1b}[?1006l\u{1b}[?1016l"
+        );
+        assert!(!encoded.contains("2004"));
     }
 }

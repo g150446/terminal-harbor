@@ -227,6 +227,14 @@ fn maybe_push_pane_changes(
     sender: PduSender,
     per_pane: Arc<Mutex<PerPane>>,
 ) -> anyhow::Result<()> {
+    // A program that died without turning its mouse modes off, such as tmux
+    // behind an ssh session that timed out, leaves the pane reporting every
+    // pointer movement to the shell. Release that before computing the
+    // changes, so this same push tells the client the mouse is free again.
+    if let Some(local) = pane.downcast_ref::<LocalPane>() {
+        local.harbor_release_stale_mouse_modes();
+    }
+
     let mut per_pane = per_pane.lock().unwrap();
     if let Some(resp) = per_pane.compute_changes(pane, None) {
         sender.send(DecodedPdu {
