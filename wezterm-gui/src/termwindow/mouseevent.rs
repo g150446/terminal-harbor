@@ -93,6 +93,20 @@ impl super::TermWindow {
 
         let border = self.get_os_border();
 
+        // The wheel over the sidebar scrolls its rows and never reaches the
+        // pane, whichever row (or empty space) is under the pointer.
+        if let WMEK::VertWheel(delta) = event.kind {
+            let sidebar_width = self.harbor_sidebar_width();
+            if sidebar_width > 0
+                && event.coords.x >= 0
+                && (event.coords.x as usize) < border.left.get() + sidebar_width
+            {
+                self.scroll_harbor_sidebar(delta as isize);
+                context.invalidate();
+                return;
+            }
+        }
+
         let first_line_offset = if self.show_tab_bar && !self.config.tab_bar_at_bottom {
             self.tab_bar_pixel_height().unwrap_or(0.) as isize
         } else {

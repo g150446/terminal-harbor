@@ -200,6 +200,30 @@ If a new tab-activation path is introduced without one of these notifications,
 explicitly invalidate the Harbor sidebar there. Do not rebuild the sidebar on
 every paint frame; the cached layout is intentional.
 
+## Scrolling
+
+The heading and **＋ New workspace** stay pinned at the top; every row below
+them (peer rows and workspace rows) is the scrolling body. The mouse wheel or
+trackpad over the sidebar scrolls the body one whole row per line of wheel
+delta and is never forwarded to the pane underneath, even over empty sidebar
+space.
+
+Rows are skipped, not clipped. The box model has no clip rectangle, so a row
+translated above the header would paint over the window's top edge; instead
+`build_harbor_sidebar()` measures every row once, picks the rows that fit with
+`sidebar_visible_range()`, and lays out only those. When the body overflows,
+muted `▴ N more` / `▾ N more` lines mark the hidden rows above and below, and
+their space is reserved whenever the body overflows so the range does not
+oscillate.
+
+`TermWindow.harbor_sidebar_scroll` is the number of body rows hidden above. The
+wheel adjusts it without bounds and the next build clamps it so the last row is
+always reachable. When the selected workspace changes (a click, `⌘1`–`⌘9`, or
+`SwitchWorkspaceRelative`), the build scrolls it into view with the smallest
+change of offset. The selection is followed only on change, tracked in
+`harbor_sidebar_followed`, because the sidebar is rebuilt for every activity
+update and following on every build would undo the user's own scrolling.
+
 ## Tab and workspace close lifecycle
 
 Closing a tab is immediate and never opens a confirmation overlay. When it is
@@ -291,7 +315,10 @@ checked against it:
 - closing the final tab shows no confirmation, removes that workspace row, and
   leaves every other row visible in order, including after a workspace-restoring session restart;
 - long and non-ASCII summaries truncate to one row so row heights stay even,
-  and no full path is exposed.
+  and no full path is exposed;
+- with more rows than fit, the wheel over the sidebar reaches the last row,
+  `▴`/`▾` counts match the hidden rows, the pane does not scroll, and `⌘9` on
+  a hidden row scrolls it into view.
 
 ## Remote Harbor peers
 
@@ -312,4 +339,5 @@ click; a tailnet pairing never shows LAN as already agreed.
 
 Unit tests should continue covering basename extraction (including `/` and
 non-ASCII paths), `KNOWN_AGENTS` matching, spinner stripping, uninformative
-title rejection, 1-based title-line numbering, and cell-width truncation.
+title rejection, 1-based title-line numbering, cell-width truncation, and the
+scroll range (clamping, indicator room, uneven row heights, following).

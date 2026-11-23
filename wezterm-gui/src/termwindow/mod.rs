@@ -411,6 +411,10 @@ pub struct TermWindow {
     tab_bar: TabBarState,
     fancy_tab_bar: Option<box_model::ComputedElement>,
     harbor_sidebar: Option<box_model::ComputedElement>,
+    /// Number of sidebar body rows scrolled off the top.
+    harbor_sidebar_scroll: usize,
+    /// The selected workspace the sidebar last scrolled into view.
+    harbor_sidebar_followed: Option<String>,
     /// Last sidebar-relevant pane title, keyed by pane. Agents animate a
     /// spinner in their title, so the cached sidebar is only dropped when the
     /// summary text itself changes.
@@ -747,6 +751,8 @@ impl TermWindow {
             tab_bar: TabBarState::default(),
             fancy_tab_bar: None,
             harbor_sidebar: None,
+            harbor_sidebar_scroll: 0,
+            harbor_sidebar_followed: None,
             harbor_pane_titles: HashMap::new(),
             right_status: String::new(),
             left_status: String::new(),

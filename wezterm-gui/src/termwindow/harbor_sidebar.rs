@@ -119,6 +119,56 @@ fn workspace_detail(agent: Option<&str>, summary: Option<&str>, max_cols: usize)
     Some(detail)
 }
 
+/// Choose which body rows to lay out, as `start..end`.
+///
+/// When every row fits in `available` the whole list is shown. Otherwise room
+/// is reserved for the "more" indicators above and below, `scroll` is clamped
+/// so the last row can always be reached, and `follow` (a row index) is
+/// brought into view with the smallest change of offset.
+fn sidebar_visible_range(
+    heights: &[f32],
+    available: f32,
+    indicator: f32,
+    scroll: usize,
+    follow: Option<usize>,
+) -> (usize, usize) {
+    let len = heights.len();
+    if len == 0 || heights.iter().sum::<f32>() <= available {
+        return (0, len);
+    }
+    let room = (available - 2. * indicator).max(0.);
+    // Smallest start whose rows from `start` through `last` all fit, keeping
+    // at least `last` itself.
+    let start_ending_at = |last: usize| {
+        let mut used = 0.;
+        let mut start = last + 1;
+        while start > 0 && used + heights[start - 1] <= room {
+            used += heights[start - 1];
+            start -= 1;
+        }
+        start.min(last)
+    };
+    let max_start = start_ending_at(len - 1);
+    let mut start = scroll.min(max_start);
+    let end_from = |start: usize| {
+        let mut used = 0.;
+        let mut end = start;
+        while end < len && used + heights[end] <= room {
+            used += heights[end];
+            end += 1;
+        }
+        end.max(start + 1)
+    };
+    if let Some(row) = follow.filter(|row| *row < len) {
+        if row < start {
+            start = row;
+        } else if row >= end_from(start) {
+            start = start_ending_at(row);
+        }
+    }
+    (start, end_from(start))
+}
+
 /// box_model Text is single-line; multi-line content must be Children of Text rows.
 fn wrapped_text_element(
     font: &std::rc::Rc<wezterm_font::LoadedFont>,
@@ -186,7 +236,7 @@ impl crate::TermWindow {
         )
     }
 
-    fn build_harbor_sidebar(&self) -> anyhow::Result<ComputedElement> {
+    fn build_harbor_sidebar(&mut self) -> anyhow::Result<ComputedElement> {
         let width = self.harbor_sidebar_width() as f32;
         let border = self.get_os_border();
         let height =
@@ -199,9 +249,12 @@ impl crate::TermWindow {
         let navy = LinearRgba(0.018, 0.027, 0.045, 0.97);
         let teal = LinearRgba(0.12, 0.72, 0.64, 1.0);
         let muted = LinearRgba(0.42, 0.5, 0.54, 1.0);
+        // The header stays pinned; only `children` (the body rows) scroll.
+        let mut header = vec![];
         let mut children = vec![];
+        let mut selected_row: Option<(usize, String)> = None;
 
-        children.push(
+        header.push(
             Element::new(&font, ElementContent::Text("Terminal Harbor".to_string()))
                 .display(DisplayType::Block)
                 .line_height(Some(1.8))
@@ -220,7 +273,7 @@ impl crate::TermWindow {
                 }),
         );
 
-        children.push(
+        header.push(
             Element::new(&font, ElementContent::Text("＋  New workspace".to_string()))
                 .display(DisplayType::Block)
                 .item_type(UIItemType::HarborAddWorkspace)
@@ -616,6 +669,9 @@ impl crate::TermWindow {
 
         for (index, row) in harbor_workspace::rows().into_iter().enumerate() {
             let (colors, hover) = Self::sidebar_colors(row.selected);
+            if row.selected {
+                selected_row = Some((children.len(), row.workspace.mux_workspace.clone()));
+            }
             // Line 1 is the live directory; the creation-time workspace name is
             // deliberately not shown, since it never follows `cd` or tab
             // switches.
@@ -663,42 +719,126 @@ impl crate::TermWindow {
             );
         }
 
-        let root = Element::new(&font, ElementContent::Children(children))
+        let indicator = |text: String| {
+            Element::new(&font, ElementContent::Text(text))
+                .display(DisplayType::Block)
+                .line_height(Some(1.3))
+                .padding(BoxDimension {
+                    left: Dimension::Pixels(16.),
+                    right: Dimension::Pixels(12.),
+                    top: Dimension::Pixels(2.),
+                    bottom: Dimension::Pixels(2.),
+                })
+                .min_width(Some(Dimension::Pixels(content_width)))
+                .max_width(Some(Dimension::Pixels(content_width)))
+                .colors(ElementColors {
+                    border: BorderColor::default(),
+                    bg: navy.into(),
+                    text: muted.into(),
+                })
+        };
+        let root_colors = ElementColors {
+            border: BorderColor::default(),
+            bg: navy.into(),
+            text: LinearRgba(0.84, 0.89, 0.91, 1.0).into(),
+        };
+        let context = LayoutContext {
+            height: DimensionContext {
+                dpi: self.dimensions.dpi as f32,
+                pixel_max: height,
+                pixel_cell: metrics.cell_size.height as f32,
+            },
+            width: DimensionContext {
+                dpi: self.dimensions.dpi as f32,
+                pixel_max: width,
+                pixel_cell: metrics.cell_size.width as f32,
+            },
+            bounds: euclid::rect(0., 0., width, height),
+            metrics: &metrics,
+            gl_state: self.render_state.as_ref().unwrap(),
+            // Share the established UI text layer used by the fancy tab bar.
+            zindex: 10,
+        };
+
+        // Measure every row once, then lay out only the rows that fit. Whole
+        // rows are skipped rather than clipped, because the box model has no
+        // clip rectangle and a partially hidden row would paint over the
+        // window's top edge.
+        let mut measure = header.clone();
+        measure.extend(children.iter().cloned());
+        measure.push(indicator("▾  0 more".to_string()));
+        let measured = self.compute_element(
+            &context,
+            &Element::new(&font, ElementContent::Children(measure))
+                .display(DisplayType::Block)
+                .min_width(Some(Dimension::Pixels(width)))
+                .max_width(Some(Dimension::Pixels(width))),
+        )?;
+        let heights: Vec<f32> = match &measured.content {
+            ComputedElementContent::Children(kids) => {
+                kids.iter().map(|kid| kid.bounds.height()).collect()
+            }
+            _ => vec![],
+        };
+        let header_height: f32 = heights.iter().take(header.len()).sum();
+        let indicator_height = heights.last().copied().unwrap_or(0.);
+        let row_heights = heights
+            .get(header.len()..heights.len().saturating_sub(1))
+            .unwrap_or(&[]);
+
+        // Follow the selection only when it changes, so a rebuild for
+        // activity updates does not undo the user's own scrolling.
+        let follow = match &selected_row {
+            Some((index, name)) if self.harbor_sidebar_followed.as_ref() != Some(name) => {
+                Some(*index)
+            }
+            _ => None,
+        };
+        self.harbor_sidebar_followed = selected_row.map(|(_, name)| name);
+        let (start, end) = sidebar_visible_range(
+            row_heights,
+            height - header_height,
+            indicator_height,
+            self.harbor_sidebar_scroll,
+            follow,
+        );
+        self.harbor_sidebar_scroll = start;
+
+        let total = children.len();
+        let mut visible = header;
+        if start > 0 {
+            visible.push(indicator(format!("▴  {start} more")));
+        }
+        visible.extend(children.into_iter().skip(start).take(end - start));
+        if end < total {
+            visible.push(indicator(format!("▾  {} more", total - end)));
+        }
+
+        let root = Element::new(&font, ElementContent::Children(visible))
             .display(DisplayType::Block)
             .min_width(Some(Dimension::Pixels(width)))
             .max_width(Some(Dimension::Pixels(width)))
             .min_height(Some(Dimension::Pixels(height)))
-            .colors(ElementColors {
-                border: BorderColor::default(),
-                bg: navy.into(),
-                text: LinearRgba(0.84, 0.89, 0.91, 1.0).into(),
-            });
+            .colors(root_colors);
 
-        let mut computed = self.compute_element(
-            &LayoutContext {
-                height: DimensionContext {
-                    dpi: self.dimensions.dpi as f32,
-                    pixel_max: height,
-                    pixel_cell: metrics.cell_size.height as f32,
-                },
-                width: DimensionContext {
-                    dpi: self.dimensions.dpi as f32,
-                    pixel_max: width,
-                    pixel_cell: metrics.cell_size.width as f32,
-                },
-                bounds: euclid::rect(0., 0., width, height),
-                metrics: &metrics,
-                gl_state: self.render_state.as_ref().unwrap(),
-                // Share the established UI text layer used by the fancy tab bar.
-                zindex: 10,
-            },
-            &root,
-        )?;
+        let mut computed = self.compute_element(&context, &root)?;
         computed.translate(euclid::vec2(
             border.left.get() as f32,
             border.top.get() as f32,
         ));
         Ok(computed)
+    }
+
+    /// Scroll the sidebar body by whole rows; positive `delta` moves toward
+    /// the top. The next build clamps the offset to the rows that exist.
+    pub fn scroll_harbor_sidebar(&mut self, delta: isize) {
+        self.harbor_sidebar_scroll = if delta > 0 {
+            self.harbor_sidebar_scroll.saturating_sub(delta as usize)
+        } else {
+            self.harbor_sidebar_scroll
+                .saturating_add(delta.unsigned_abs())
+        };
+        self.invalidate_harbor_sidebar();
     }
 
     pub fn paint_harbor_sidebar(&mut self) -> anyhow::Result<()> {
@@ -827,8 +967,8 @@ impl crate::TermWindow {
 #[cfg(test)]
 mod tests {
     use super::{
-        new_workspace_directory, truncate_line, unicode_column_width, workspace_detail,
-        workspace_title_line, wrap_sidebar_lines,
+        new_workspace_directory, sidebar_visible_range, truncate_line, unicode_column_width,
+        workspace_detail, workspace_title_line, wrap_sidebar_lines,
     };
 
     #[test]
@@ -962,5 +1102,74 @@ mod tests {
         let out = truncate_line("作業内容の要約が長い", 10);
         assert_eq!(out, "作業内容…");
         assert!(unicode_column_width(&out, None) <= 10);
+    }
+
+    #[test]
+    fn visible_range_shows_everything_when_rows_fit() {
+        assert_eq!(
+            sidebar_visible_range(&[10., 10., 10.], 30., 5., 2, None),
+            (0, 3)
+        );
+        assert_eq!(sidebar_visible_range(&[], -4., 5., 3, None), (0, 0));
+    }
+
+    #[test]
+    fn visible_range_reserves_room_for_both_indicators() {
+        // 100px minus two 10px indicators leaves room for four 20px rows.
+        assert_eq!(
+            sidebar_visible_range(&[20.; 10], 100., 10., 0, None),
+            (0, 4)
+        );
+        assert_eq!(
+            sidebar_visible_range(&[20.; 10], 100., 10., 3, None),
+            (3, 7)
+        );
+    }
+
+    #[test]
+    fn visible_range_clamps_scroll_so_the_last_row_stays_reachable() {
+        assert_eq!(
+            sidebar_visible_range(&[20.; 10], 100., 10., 99, None),
+            (6, 10)
+        );
+    }
+
+    #[test]
+    fn visible_range_handles_rows_of_different_heights() {
+        let heights = [10., 40., 10., 10., 30., 10.];
+        // Room is 60: from the end, 10 + 30 + 10 + 10 fit, 40 does not.
+        assert_eq!(sidebar_visible_range(&heights, 80., 10., 99, None), (2, 6));
+        assert_eq!(sidebar_visible_range(&heights, 80., 10., 0, None), (0, 3));
+    }
+
+    #[test]
+    fn visible_range_always_shows_at_least_one_row() {
+        assert_eq!(
+            sidebar_visible_range(&[50., 50.], 40., 10., 0, None),
+            (0, 1)
+        );
+        assert_eq!(
+            sidebar_visible_range(&[50., 50.], 40., 10., 9, None),
+            (1, 2)
+        );
+    }
+
+    #[test]
+    fn visible_range_scrolls_the_followed_row_into_view() {
+        // Below the window: the row becomes the last one shown.
+        assert_eq!(
+            sidebar_visible_range(&[20.; 10], 100., 10., 0, Some(8)),
+            (5, 9)
+        );
+        // Above the window: the row becomes the first one shown.
+        assert_eq!(
+            sidebar_visible_range(&[20.; 10], 100., 10., 6, Some(2)),
+            (2, 6)
+        );
+        // Already visible: the offset is left alone.
+        assert_eq!(
+            sidebar_visible_range(&[20.; 10], 100., 10., 3, Some(5)),
+            (3, 7)
+        );
     }
 }
