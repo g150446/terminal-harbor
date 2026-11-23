@@ -6,6 +6,40 @@
 
 ---
 
+## 2026-11-23 18:05 — サイドバーのスクロール、Pairing メニュー、iPad (Sidecar) 移動（GUI）
+
+| 項目 | 値 |
+| --- | --- |
+| source commit | `e0e356015`（working tree クリーン、dirty なし） |
+| toolchain | rustc 1.97.1 (8bab26f4f 2026-07-14) |
+| ビルド日時 | 2026-11-23 18:04–18:05 JST |
+| `wezterm-gui`（配置後） | `57d49a3004bc023a1d4b3a9693d0b5623a873fc98c1f261d37f906e83a7a981e` |
+| `wezterm`（配置後） | `9e877d1dbc1c584a97685ec1ebeaaf48e41b38b75c51dab28335cf3fe4036b91` |
+| `wezterm-mux-server`（配置後） | `07d15a7e1ad448e2d349b912184cbd53c2116ced84ee2862f7ce5e8447f61f88` |
+| `strip-ansi-escapes`（配置後） | `bc5c0b5ac092522a99c108e705c4f490fa3cb67d2f0cc95e1467be75a3bb83a6` |
+| 署名 | ad-hoc (`codesign --force --deep --sign -`)、ステージ先と配置後の `--verify --deep --strict` 双方合格 |
+| 配置日時 | 2026-11-23 18:05 JST |
+| 旧バンドル退避先 | `/private/tmp/Terminal-Harbor-previous-20261123.app` |
+| 必要な再起動方式 | 保持再起動 (`wezterm restart`) |
+
+変更は `wezterm-gui` と `window` crate（`WindowOps::move_to_screen`）、`config` の
+KeyAssignment 追加のみ。mux・ワイヤプロトコル・PTY・HTTP 契約は無変更なので保持再起動で
+十分と判断した。ハッシュは strip + ad-hoc 署名後のインストール済みバンドル実測値で、
+ステージ先と一致。テンプレート由来の ANGLE dylib は `otool -L` で参照なしを確認して除外。
+
+配置後の受け入れ確認:
+- GUI 1765→90558。`wezterm cli list-clients` に新 GUI PID が接続し、`wezterm cli list`
+  のペイン 9 件は継続（セッション保持）。
+- port 7780 を新 GUI PID が listen。
+- 完成バンドルの `wezterm-gui` に新ラベル（`Move Window to iPad`、
+  `Tailscale Auto-Pair: On`、サイドバーの LAN 案内行）が含まれることを strings で確認。
+
+**未確認（実機操作が必要）:** サイドバーのホイールスクロールと選択行追従、Pairing
+メニュー各項目と通知、iPad を Sidecar 接続した状態での往復移動と、その画面名が
+`ipad`/`sidecar` 判定に合致すること。unit test は可視範囲計算と移動先判定のみを検証している。
+
+---
+
 ## 2026-10-12 14:25 — Tailscale device id だけの peer pairing（GUI）
 
 | 項目 | 値 |
