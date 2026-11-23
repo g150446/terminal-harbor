@@ -838,6 +838,10 @@ impl WindowOps for Window {
         });
     }
 
+    fn move_to_screen(&self, pick: crate::ScreenPicker) -> Future<Option<String>> {
+        Connection::with_window_inner(self.id, move |inner| inner.move_to_screen(pick))
+    }
+
     fn maximize(&self) {
         Connection::with_window_inner(self.id, move |inner| {
             inner.maximize();
@@ -996,6 +1000,43 @@ impl WindowInner {
     fn toggle_native_fullscreen(&mut self) {
         unsafe {
             NSWindow::toggleFullScreen_(*self.window, nil);
+        }
+    }
+
+    fn move_to_screen(&mut self, pick: crate::ScreenPicker) -> anyhow::Result<Option<String>> {
+        // A full-screen window owns its own Space; moving its frame would
+        // fight the system's full-screen layout.
+        if self.is_fullscreen() {
+            bail!("the window is in full screen");
+        }
+        unsafe {
+            let screens = NSScreen::screens(nil);
+            let names: Vec<String> = (0..screens.count())
+                .map(|idx| {
+                    crate::os::macos::connection::nsscreen_to_screen_info(
+                        screens.objectAtIndex(idx),
+                    )
+                    .name
+                })
+                .collect();
+            let current: id = msg_send![*self.window, screen];
+            let current_name = if current.is_null() {
+                String::new()
+            } else {
+                crate::os::macos::connection::nsscreen_to_screen_info(current).name
+            };
+            let Some(target) = pick(&names, &current_name) else {
+                return Ok(None);
+            };
+            let Some(index) = names.iter().position(|name| *name == target) else {
+                return Ok(None);
+            };
+            // `frame` is in the global Cocoa coordinate space shared by all
+            // screens, so it can be applied directly whatever each screen's
+            // backing scale is.
+            let visible = NSScreen::visibleFrame(screens.objectAtIndex(index as u64));
+            self.window.setFrame_display_(visible, YES);
+            Ok(Some(target))
         }
     }
 

@@ -1651,6 +1651,15 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &["Window"],
             icon: Some("cod_layout_sidebar_left"),
         },
+        MoveWindowToSidecar => CommandDef {
+            brief: "Move Window to iPad / Back to Mac".into(),
+            doc: "Moves the window to an iPad used as a Sidecar display, or back to the Mac"
+                .into(),
+            keys: vec![],
+            args: &[ArgType::ActiveWindow],
+            menubar: &["Window"],
+            icon: Some("md_tablet"),
+        },
         HarborPairMobile => CommandDef {
             brief: "Pair Mobile…".into(),
             doc: "Opens the mobile pairing QR code and copies its pair URI".into(),
@@ -2320,6 +2329,8 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         SwitchWorkspaceRelative(-1),
         SwitchWorkspaceRelative(1),
         ToggleWorkspaceSidebar,
+        #[cfg(target_os = "macos")]
+        MoveWindowToSidecar,
         // ----------------- Pairing
         HarborPairMobile,
         HarborNewMobilePairQr,

@@ -40,6 +40,7 @@ mod customglyph;
 mod download;
 mod frontend;
 mod glyphcache;
+mod harbor_display;
 mod harbor_mobile;
 mod harbor_peer;
 mod harbor_plan;

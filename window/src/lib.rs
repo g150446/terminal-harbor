@@ -38,6 +38,10 @@ pub use glium;
 pub use os::*;
 pub use wezterm_input_types::*;
 
+/// Chooses a target screen for `WindowOps::move_to_screen` from all screen
+/// names (menu-bar screen first) and the current screen's name.
+pub type ScreenPicker = fn(&[String], &str) -> Option<String>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Clipboard {
     Clipboard,
@@ -332,6 +336,17 @@ pub trait WindowOps {
     fn focus(&self) {}
 
     fn toggle_fullscreen(&self) {}
+
+    /// Move the window onto another screen and fill that screen's visible
+    /// area. `pick` receives the names of all screens (the one with the menu
+    /// bar first) and the name of the window's current screen, and returns the
+    /// name of the target, or `None` to leave the window where it is.
+    /// Resolves to the name of the screen the window moved to.
+    ///
+    /// Only implemented on macOS; elsewhere the window stays put.
+    fn move_to_screen(&self, _pick: ScreenPicker) -> Future<Option<String>> {
+        Future::ok(None)
+    }
 
     fn config_did_change(&self, _config: &config::ConfigHandle) {}
 

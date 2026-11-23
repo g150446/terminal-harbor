@@ -604,6 +604,9 @@ pub enum KeyAssignment {
     ShowWorkspaceSwitcher,
     ActivateWorkspace(usize),
     ToggleWorkspaceSidebar,
+    /// Move the window to an iPad used as a Sidecar display, or back to the
+    /// Mac when it is already there.
+    MoveWindowToSidecar,
     /// Open the mobile pairing QR code and copy its pair URI.
     HarborPairMobile,
     /// Replace the mobile pairing offer with a fresh one and open its QR code.

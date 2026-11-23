@@ -151,6 +151,13 @@ The same bridge can be used from another Terminal Harbor window.
 
 Details are in [`docs/harbor-peers.md`](docs/harbor-peers.md).
 
+## Using an iPad as a second screen
+
+When an iPad is connected to the Mac as a Sidecar display, **Window ▸ Move
+Window to iPad / Back to Mac** moves the Terminal Harbor window onto the iPad
+and fills it; choosing it again brings the window back. See
+[`docs/harbor-displays.md`](docs/harbor-displays.md).
+
 ## Upstream foundation
 
 <img height="128" alt="WezTerm Icon" src="https://raw.githubusercontent.com/wezterm/wezterm/main/assets/icon/wezterm-icon.svg" align="left"> *A GPU-accelerated cross-platform terminal emulator and multiplexer written by <a href="https://github.com/wez">@wez</a> and implemented in <a href="https://www.rust-lang.org/">Rust</a>*

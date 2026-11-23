@@ -3141,6 +3141,11 @@ impl TermWindow {
                     self.harbor_activate_workspace(workspace)?;
                 }
             }
+            MoveWindowToSidecar => {
+                if let Some(window) = self.window.as_ref() {
+                    crate::harbor_display::toggle_sidecar(window);
+                }
+            }
             HarborPairMobile
             | HarborNewMobilePairQr
             | HarborCopyMobilePairUri
