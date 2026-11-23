@@ -10,10 +10,17 @@ a Tailscale device id when the target opts in to no-code pairing.
 
 ### With the one-time pairing code
 
-1. On the host machine, open **Pair mobile** so a one-time URI is copied to the
-   clipboard (and a QR is shown for phones).
-2. On the client machine, copy that URI if needed, then click **Pair another
-   Harbor**. The client reads the clipboard and completes HMAC pairing.
+1. On the host machine, choose **Pairing ▸ Pair Mobile…** so a one-time URI is
+   copied to the clipboard (and a QR is shown for phones).
+2. On the client machine, copy that URI if needed, then choose **Pairing ▸ Pair
+   Another Harbor (Pair URI on Clipboard)**. The client reads the clipboard and
+   completes HMAC pairing.
+
+Every pairing control lives in the **Pairing** menu of the menubar (and the
+command palette); the sidebar keeps only the paired hosts and their remote
+workspace rows. A menu has no room for status text, so the outcome of a pairing
+attempt is reported as a notification carrying only the generic status from
+`pair_status()` — never the clipboard content, an address, or a token.
 
 The URI `host=` field is a LAN address. Typed `endpoint=` values also list
 Tailscale HTTPS, Tailscale direct (`http://<magicdns-or-ip>:7780`), and LAN.
@@ -26,15 +33,16 @@ with the saved `server_id`.
 For a peer that is reachable over Tailscale and owned by the same Tailscale
 user, the code can be skipped.
 
-1. On the machine that will be controlled, click **Tailscale auto-pair: off**
-   until it reads **on**. This is the opt-in switch; it is off by default and
+1. On the machine that will be controlled, choose **Pairing ▸ Tailscale
+   Auto-Pair: Off** so it reads **On**. This is the opt-in switch; it is off by default and
    persists as `allow_tailnet_pairing` in `settings-v1.json` (the file keeps its
    name while the stored `schema_version` moves to 2, and version 1 files still
    load with the switch off).
 2. On the controlling machine, copy the peer's MagicDNS name
    (`pc-office.tailnet-abc123.ts.net`; its Tailscale machine name or one of its
-   tailnet addresses also resolve) and click **Pair via Tailscale (clipboard)**.
-   A `harbor://pair` URI on the clipboard still works from this row.
+   tailnet addresses also resolve) and choose **Pairing ▸ Pair Another Harbor
+   via Tailscale (Device ID on Clipboard)**. A `harbor://pair` URI on the
+   clipboard still works from this item.
 
 The client resolves the id from its own `tailscale status --json` and posts
 `/v1/pair/tailnet` to port 7780 on each address of that node. The request
@@ -71,9 +79,14 @@ Turn the switch off when pairing is done. HMAC still protects integrity after
 pairing; the bridge remains plain HTTP on `:7780`, so nothing here hides
 request or response bodies from another node on the tailnet.
 
-If only Tailscale routes fail, the sidebar shows **Use local network**. LAN
-HTTP is used only after that click, and a tailnet pairing never drops to LAN on
-its own.
+If only Tailscale routes fail, the sidebar says so under the host heading and
+the Pairing menu gains **Use Local Network for <host>**. LAN HTTP is used only
+after that choice, and a tailnet pairing never drops to LAN on its own.
+
+The per-host items (**Use Local Network for …**, **Unpair …**) are generated
+from `harbor_peer::snapshot()`. The poller notifies on every refresh, so
+`notify_sidebar()` rebuilds the menubar only when the set of hosts, their
+labels, or their LAN-confirmation state changes.
 
 Mutual access is two pairings: each machine is a client of the other.
 
@@ -94,8 +107,8 @@ field (falling back to `name`). Clicking it:
 
 The overlay is not a native remote pane. Space, Tab, Shift+Tab, arrows, Escape,
 and Ctrl-C are forwarded as keys; other typing goes through the instruction line.
-Esc on an empty line closes the overlay. Unpair removes only the local
-credential; it does not change the host machine.
+Esc on an empty line closes the overlay. **Pairing ▸ Unpair <host>** removes
+only the local credential; it does not change the host machine.
 
 ## Code ownership
 
@@ -103,7 +116,9 @@ credential; it does not change the host machine.
 |---|---|
 | `wezterm-gui/src/harbor_peer.rs` | HMAC HTTP client, clipboard pairing, Tailscale device-id resolution, endpoint order, `paired-desktops.json` |
 | `wezterm-gui/src/overlay/harbor_remote.rs` | Screen overlay; forwards Space, Tab, Shift+Tab, arrows, Escape, Ctrl-C |
-| `wezterm-gui/src/termwindow/harbor_sidebar.rs` | **Pair another Harbor**, **Pair via Tailscale (clipboard)**, **Tailscale auto-pair**, remote host heading, remote workspace rows |
+| `wezterm-gui/src/termwindow/harbor_sidebar.rs` | Remote host heading, its error and LAN hint, remote workspace rows |
+| `wezterm-gui/src/termwindow/harbor_pairing.rs` | Pairing menu actions: clipboard pairing, Tailscale auto-pair toggle, unpair, LAN confirmation, notifications |
+| `wezterm-gui/src/commands.rs` | Pairing menu items, including the per-host items |
 | `wezterm-gui/src/harbor_mobile.rs` | Host-side `/key` allowlist, additive workspace `directory`, Tailscale status parsing, `/v1/pair/tailnet` |
 | `wezterm-gui/src/harbor_settings.rs` | `allow_tailnet_pairing` opt-in (schema v2) |
 
@@ -111,9 +126,9 @@ credential; it does not change the host machine.
 
 - Pair while both machines are on Tailscale and not the same LAN, then open a
   remote workspace and send Enter.
-- Confirm a Tailscale-only failure shows **Use local network** before LAN is
-  used.
-- With **Tailscale auto-pair** off, `Pair via Tailscale (clipboard)` fails and
+- Confirm a Tailscale-only failure offers **Use Local Network for <host>** in
+  the Pairing menu before LAN is used.
+- With **Tailscale Auto-Pair** off, **Pair Another Harbor via Tailscale** fails and
   the host answers `/v1/pair/tailnet` with `403`. With it on, the pairing
   succeeds and `paired-desktops.json` records a `tailscale_direct` endpoint as
   `last_successful_url`.

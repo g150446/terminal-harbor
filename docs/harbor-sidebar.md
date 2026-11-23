@@ -322,7 +322,7 @@ checked against it:
 
 ## Remote Harbor peers
 
-A paired Harbor appears as a host heading under **Pair another Harbor**. Its
+A paired Harbor appears as a host heading in the sidebar body. Its
 workspace rows use the same activity glyph and directory basename as local
 rows, without the 1-based index prefix. They must not run `SwitchToWorkspace`
 locally: a click opens the remote screen overlay and sends input over the
@@ -330,12 +330,12 @@ mobile bridge. Full remote paths stay
 off the sidebar. Pair URIs, tokens, Tailscale node ids, and secrets stay out of
 the sidebar, logs, and commits. See [`harbor-peers.md`](harbor-peers.md).
 
-Two rows sit under **Pair another Harbor**: **Pair via Tailscale (clipboard)**
-pairs by device id with no pairing code, and **Tailscale auto-pair: on/off**
-is this machine's host-side opt-in for that path. The toggle label states the
-policy this machine serves, not a connection state, and the default is off. A
-fallback to the local network still requires the explicit **Use local network**
-click; a tailnet pairing never shows LAN as already agreed.
+Pairing controls are not sidebar rows. **Pair Mobile…**, both **Pair Another
+Harbor** routes, **Tailscale Auto-Pair: On/Off**, **Unpair <host>**, and **Use
+Local Network for <host>** live in the menubar's **Pairing** menu. The sidebar
+keeps the host heading, its error line, and — while a fallback is pending — a
+hint pointing at that menu. A fallback to the local network still requires the
+explicit menu choice; a tailnet pairing never shows LAN as already agreed.
 
 Unit tests should continue covering basename extraction (including `/` and
 non-ASCII paths), `KNOWN_AGENTS` matching, spinner stripping, uninformative

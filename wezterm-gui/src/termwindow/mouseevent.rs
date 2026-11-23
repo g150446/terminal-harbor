@@ -41,15 +41,6 @@ impl super::TermWindow {
             }
             UIItemType::HarborWorkspace(_)
             | UIItemType::HarborAddWorkspace
-            | UIItemType::HarborPairMobile
-            | UIItemType::HarborRefreshPair
-            | UIItemType::HarborOpenPairQr
-            | UIItemType::HarborCopyPairUri
-            | UIItemType::HarborPairPeer
-            | UIItemType::HarborPairPeerTailscale
-            | UIItemType::HarborToggleTailnetPair
-            | UIItemType::HarborConfirmLan(_)
-            | UIItemType::HarborUnpairPeer(_)
             | UIItemType::HarborRemoteWorkspace { .. } => {}
             UIItemType::CloseTab(_)
             | UIItemType::AboveScrollThumb
@@ -64,15 +55,6 @@ impl super::TermWindow {
             UIItemType::TabBar(_) => {}
             UIItemType::HarborWorkspace(_)
             | UIItemType::HarborAddWorkspace
-            | UIItemType::HarborPairMobile
-            | UIItemType::HarborRefreshPair
-            | UIItemType::HarborOpenPairQr
-            | UIItemType::HarborCopyPairUri
-            | UIItemType::HarborPairPeer
-            | UIItemType::HarborPairPeerTailscale
-            | UIItemType::HarborToggleTailnetPair
-            | UIItemType::HarborConfirmLan(_)
-            | UIItemType::HarborUnpairPeer(_)
             | UIItemType::HarborRemoteWorkspace { .. } => {}
             UIItemType::CloseTab(_)
             | UIItemType::AboveScrollThumb
@@ -422,76 +404,6 @@ impl super::TermWindow {
                     if let Err(err) = self.harbor_create_workspace() {
                         log::error!("creating Terminal Harbor workspace: {err:#}");
                     }
-                }
-                context.set_cursor(Some(MouseCursor::Arrow));
-            }
-            UIItemType::HarborPairMobile => {
-                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
-                    let visible = crate::harbor_mobile::toggle_pairing_ui();
-                    if visible {
-                        // Surface the scannable QR immediately and provide the
-                        // URI as a manual-entry fallback.
-                        crate::harbor_mobile::open_pair_qr();
-                        if let Some(uri) = crate::harbor_mobile::current_pair_uri() {
-                            context.set_clipboard(window::Clipboard::Clipboard, uri);
-                        }
-                    }
-                    self.invalidate_harbor_sidebar();
-                }
-                context.set_cursor(Some(MouseCursor::Arrow));
-            }
-            UIItemType::HarborRefreshPair => {
-                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
-                    crate::harbor_mobile::refresh_pair_offer();
-                    crate::harbor_mobile::open_pair_qr();
-                    self.invalidate_harbor_sidebar();
-                }
-                context.set_cursor(Some(MouseCursor::Arrow));
-            }
-            UIItemType::HarborOpenPairQr => {
-                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
-                    crate::harbor_mobile::open_pair_qr();
-                }
-                context.set_cursor(Some(MouseCursor::Arrow));
-            }
-            UIItemType::HarborCopyPairUri => {
-                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
-                    if let Some(uri) = crate::harbor_mobile::current_pair_uri() {
-                        context.set_clipboard(window::Clipboard::Clipboard, uri);
-                    }
-                }
-                context.set_cursor(Some(MouseCursor::Arrow));
-            }
-            UIItemType::HarborPairPeer => {
-                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
-                    self.harbor_pair_peer_from_clipboard(context);
-                }
-                context.set_cursor(Some(MouseCursor::Arrow));
-            }
-            UIItemType::HarborPairPeerTailscale => {
-                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
-                    self.harbor_pair_peer_tailscale_from_clipboard(context);
-                }
-                context.set_cursor(Some(MouseCursor::Arrow));
-            }
-            UIItemType::HarborToggleTailnetPair => {
-                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
-                    crate::harbor_mobile::toggle_tailnet_pairing();
-                    self.invalidate_harbor_sidebar();
-                }
-                context.set_cursor(Some(MouseCursor::Arrow));
-            }
-            UIItemType::HarborConfirmLan(server_id) => {
-                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
-                    crate::harbor_peer::confirm_lan_fallback(&server_id);
-                    self.invalidate_harbor_sidebar();
-                }
-                context.set_cursor(Some(MouseCursor::Arrow));
-            }
-            UIItemType::HarborUnpairPeer(server_id) => {
-                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
-                    crate::harbor_peer::unpair(&server_id);
-                    self.invalidate_harbor_sidebar();
                 }
                 context.set_cursor(Some(MouseCursor::Arrow));
             }

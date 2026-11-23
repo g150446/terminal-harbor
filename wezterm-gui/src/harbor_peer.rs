@@ -479,8 +479,34 @@ fn parse_workspaces(value: &serde_json::Value) -> Vec<RemoteWorkspace> {
         .collect()
 }
 
+/// What the Pairing menu shows per peer. The poller notifies on every
+/// refresh, so the menubar is rebuilt only when this changes.
+fn menu_signature() -> Vec<(String, String, bool)> {
+    let mut signature: Vec<_> = snapshot()
+        .into_iter()
+        .map(|peer| (peer.server_id, peer.label, peer.needs_lan_confirm))
+        .collect();
+    signature.sort();
+    signature
+}
+
+static MENU_SIGNATURE: Mutex<Vec<(String, String, bool)>> = Mutex::new(Vec::new());
+
 fn notify_sidebar() {
     promise::spawn::spawn_into_main_thread(async {
+        let signature = menu_signature();
+        let changed = {
+            let mut last = MENU_SIGNATURE.lock();
+            if *last != signature {
+                *last = signature;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            crate::commands::CommandDef::recreate_menubar(&config::configuration());
+        }
         if let Some(fe) = crate::frontend::try_front_end() {
             for gui in fe.gui_windows() {
                 gui.window.notify(TermWindowNotif::Apply(Box::new(|tw| {

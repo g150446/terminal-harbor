@@ -604,6 +604,21 @@ pub enum KeyAssignment {
     ShowWorkspaceSwitcher,
     ActivateWorkspace(usize),
     ToggleWorkspaceSidebar,
+    /// Open the mobile pairing QR code and copy its pair URI.
+    HarborPairMobile,
+    /// Replace the mobile pairing offer with a fresh one and open its QR code.
+    HarborNewMobilePairQr,
+    HarborCopyMobilePairUri,
+    /// Pair another Harbor using a pair URI on the clipboard.
+    HarborPairPeerFromClipboard,
+    /// Pair another Harbor using a Tailscale device id (or pair URI) on the
+    /// clipboard.
+    HarborPairPeerTailscaleFromClipboard,
+    HarborToggleTailnetPair,
+    /// Forget the paired Harbor with this server id.
+    HarborUnpairPeer(String),
+    /// Allow the paired Harbor with this server id to fall back to the LAN.
+    HarborConfirmLanFallback(String),
     SetPaneZoomState(bool),
     CloseCurrentPane {
         confirm: bool,

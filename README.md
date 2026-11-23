@@ -124,8 +124,8 @@ Terminal Harbor can be controlled from the companion Flutter app
 ([terminal-harbor-mobile](../terminal-harbor-mobile)).
 
 1. Start Terminal Harbor (the mobile bridge listens on LAN port `7780`).
-2. In the Harbor sidebar, click **Pair mobile**. A square QR image opens in your
-   image viewer and the pair URI is copied to the clipboard.
+2. Choose **Pairing ▸ Pair Mobile…** in the menubar. A square QR image opens in
+   your image viewer and the pair URI is copied to the clipboard.
 3. Scan the QR code with the mobile app over Tailscale or the same local
    network, or paste the URI into the app's **Manual** entry. The URI encodes a
    short-lived `harbor://pair?...` token; the app exchanges it for a device token.
@@ -141,10 +141,12 @@ See `openapi/harbor-mobile.yaml` in the mobile repository for the contract.
 
 The same bridge can be used from another Terminal Harbor window.
 
-1. On the host Mac, click **Pair mobile** so the pair URI is on the clipboard.
-2. On the client Mac, click **Pair another Harbor**. It reads the clipboard and
-   tries Tailscale, then LAN after confirmation.
-3. Remote workspaces appear under that Mac's name. Clicking one opens a screen
+1. On the host Mac, choose **Pairing ▸ Pair Mobile…** so the pair URI is on the
+   clipboard.
+2. On the client Mac, choose **Pairing ▸ Pair Another Harbor (Pair URI on
+   Clipboard)**. It reads the clipboard and tries Tailscale, then LAN after
+   confirmation.
+3. Remote workspaces appear in the sidebar under that Mac's name. Clicking one opens a screen
    overlay and sends input to the host.
 
 Details are in [`docs/harbor-peers.md`](docs/harbor-peers.md).

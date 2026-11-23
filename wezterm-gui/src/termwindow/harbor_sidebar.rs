@@ -1,7 +1,7 @@
 use crate::termwindow::UIItemType;
 use crate::termwindow::box_model::*;
 use crate::utilsprites::RenderMetrics;
-use crate::{harbor_mobile, harbor_peer, harbor_workspace};
+use crate::{harbor_peer, harbor_workspace};
 use config::{Dimension, DimensionContext};
 use mux::Mux;
 use std::path::PathBuf;
@@ -298,240 +298,6 @@ impl crate::TermWindow {
                 })),
         );
 
-        let pair_label = if harbor_mobile::pairing_ui_visible() {
-            "▾  Hide mobile pairing"
-        } else {
-            "📱  Pair mobile"
-        };
-        let pair_colors = ElementColors {
-            border: BorderColor::default(),
-            bg: navy.into(),
-            text: muted.into(),
-        };
-        children.push(
-            wrapped_text_element(&font, pair_label, max_cols, pair_colors.clone())
-                .item_type(UIItemType::HarborPairMobile)
-                .line_height(Some(1.55))
-                .padding(BoxDimension {
-                    left: Dimension::Pixels(16.),
-                    right: Dimension::Pixels(12.),
-                    top: Dimension::Pixels(2.),
-                    bottom: Dimension::Pixels(6.),
-                })
-                .min_width(Some(Dimension::Pixels(content_width)))
-                .max_width(Some(Dimension::Pixels(content_width)))
-                .hover_colors(Some(ElementColors {
-                    border: BorderColor::default(),
-                    bg: LinearRgba(0.035, 0.09, 0.12, 0.96).into(),
-                    text: teal.into(),
-                })),
-        );
-
-        if let Some(view) = harbor_mobile::pairing_view() {
-            let info = format!(
-                "QR opened in your image viewer.\n{}:{}\nexpires {}s · {} device(s)",
-                view.host, view.port, view.expires_in_sec, view.device_count
-            );
-            children.push(
-                wrapped_text_element(
-                    &font,
-                    &info,
-                    max_cols,
-                    ElementColors {
-                        border: BorderColor::default(),
-                        bg: navy.into(),
-                        text: muted.into(),
-                    },
-                )
-                .line_height(Some(1.2))
-                .padding(BoxDimension {
-                    left: Dimension::Pixels(12.),
-                    right: Dimension::Pixels(8.),
-                    top: Dimension::Pixels(4.),
-                    bottom: Dimension::Pixels(4.),
-                })
-                .min_width(Some(Dimension::Pixels(content_width)))
-                .max_width(Some(Dimension::Pixels(content_width))),
-            );
-
-            let sidebar_link = |label: &str, item: UIItemType| {
-                Element::new(&font, ElementContent::Text(label.to_string()))
-                    .display(DisplayType::Block)
-                    .item_type(item)
-                    .line_height(Some(1.45))
-                    .padding(BoxDimension {
-                        left: Dimension::Pixels(16.),
-                        right: Dimension::Pixels(12.),
-                        top: Dimension::Pixels(3.),
-                        bottom: Dimension::Pixels(3.),
-                    })
-                    .min_width(Some(Dimension::Pixels(content_width)))
-                    .max_width(Some(Dimension::Pixels(content_width)))
-                    .colors(ElementColors {
-                        border: BorderColor::default(),
-                        bg: navy.into(),
-                        text: teal.into(),
-                    })
-                    .hover_colors(Some(ElementColors {
-                        border: BorderColor::default(),
-                        bg: LinearRgba(0.035, 0.09, 0.12, 0.96).into(),
-                        text: teal.into(),
-                    }))
-            };
-            children.push(sidebar_link(
-                "🖼  Open QR image",
-                UIItemType::HarborOpenPairQr,
-            ));
-            children.push(sidebar_link(
-                "⧉  Copy pair URI",
-                UIItemType::HarborCopyPairUri,
-            ));
-
-            children.push(
-                wrapped_text_element(
-                    &font,
-                    &format!("URI:\n{}", view.uri),
-                    max_cols,
-                    ElementColors {
-                        border: BorderColor::default(),
-                        bg: navy.into(),
-                        text: muted.into(),
-                    },
-                )
-                .line_height(Some(1.15))
-                .padding(BoxDimension {
-                    left: Dimension::Pixels(12.),
-                    right: Dimension::Pixels(8.),
-                    top: Dimension::Pixels(6.),
-                    bottom: Dimension::Pixels(2.),
-                })
-                .min_width(Some(Dimension::Pixels(content_width)))
-                .max_width(Some(Dimension::Pixels(content_width))),
-            );
-
-            children.push(
-                Element::new(&font, ElementContent::Text("↻  New QR code".to_string()))
-                    .display(DisplayType::Block)
-                    .item_type(UIItemType::HarborRefreshPair)
-                    .line_height(Some(1.45))
-                    .padding(BoxDimension {
-                        left: Dimension::Pixels(16.),
-                        right: Dimension::Pixels(12.),
-                        top: Dimension::Pixels(4.),
-                        bottom: Dimension::Pixels(8.),
-                    })
-                    .min_width(Some(Dimension::Pixels(content_width)))
-                    .max_width(Some(Dimension::Pixels(content_width)))
-                    .colors(ElementColors {
-                        border: BorderColor::default(),
-                        bg: navy.into(),
-                        text: teal.into(),
-                    })
-                    .hover_colors(Some(ElementColors {
-                        border: BorderColor::default(),
-                        bg: LinearRgba(0.035, 0.09, 0.12, 0.96).into(),
-                        text: teal.into(),
-                    })),
-            );
-        }
-
-        children.push(
-            wrapped_text_element(
-                &font,
-                "🖥  Pair another Harbor",
-                max_cols,
-                pair_colors.clone(),
-            )
-            .item_type(UIItemType::HarborPairPeer)
-            .line_height(Some(1.55))
-            .padding(BoxDimension {
-                left: Dimension::Pixels(16.),
-                right: Dimension::Pixels(12.),
-                top: Dimension::Pixels(2.),
-                bottom: Dimension::Pixels(6.),
-            })
-            .min_width(Some(Dimension::Pixels(content_width)))
-            .max_width(Some(Dimension::Pixels(content_width)))
-            .hover_colors(Some(ElementColors {
-                border: BorderColor::default(),
-                bg: LinearRgba(0.035, 0.09, 0.12, 0.96).into(),
-                text: teal.into(),
-            })),
-        );
-        children.push(
-            wrapped_text_element(
-                &font,
-                "⇄  Pair via Tailscale (clipboard)",
-                max_cols,
-                pair_colors.clone(),
-            )
-            .item_type(UIItemType::HarborPairPeerTailscale)
-            .line_height(Some(1.55))
-            .padding(BoxDimension {
-                left: Dimension::Pixels(16.),
-                right: Dimension::Pixels(12.),
-                top: Dimension::Pixels(2.),
-                bottom: Dimension::Pixels(2.),
-            })
-            .min_width(Some(Dimension::Pixels(content_width)))
-            .max_width(Some(Dimension::Pixels(content_width)))
-            .hover_colors(Some(ElementColors {
-                border: BorderColor::default(),
-                bg: LinearRgba(0.035, 0.09, 0.12, 0.96).into(),
-                text: teal.into(),
-            })),
-        );
-
-        // The switch governs this machine as a host, so it reads as the state
-        // peers see when they reach the bridge.
-        let tailnet_label = if harbor_mobile::tailnet_pairing_enabled() {
-            "🔓  Tailscale auto-pair: on"
-        } else {
-            "🔒  Tailscale auto-pair: off"
-        };
-        children.push(
-            wrapped_text_element(&font, tailnet_label, max_cols, pair_colors.clone())
-                .item_type(UIItemType::HarborToggleTailnetPair)
-                .line_height(Some(1.55))
-                .padding(BoxDimension {
-                    left: Dimension::Pixels(16.),
-                    right: Dimension::Pixels(12.),
-                    top: Dimension::Pixels(2.),
-                    bottom: Dimension::Pixels(6.),
-                })
-                .min_width(Some(Dimension::Pixels(content_width)))
-                .max_width(Some(Dimension::Pixels(content_width)))
-                .hover_colors(Some(ElementColors {
-                    border: BorderColor::default(),
-                    bg: LinearRgba(0.035, 0.09, 0.12, 0.96).into(),
-                    text: teal.into(),
-                })),
-        );
-
-        if let Some(status) = harbor_peer::pair_status() {
-            children.push(
-                wrapped_text_element(
-                    &font,
-                    &status,
-                    max_cols,
-                    ElementColors {
-                        border: BorderColor::default(),
-                        bg: navy.into(),
-                        text: muted.into(),
-                    },
-                )
-                .line_height(Some(1.2))
-                .padding(BoxDimension {
-                    left: Dimension::Pixels(16.),
-                    right: Dimension::Pixels(12.),
-                    top: Dimension::Pixels(2.),
-                    bottom: Dimension::Pixels(6.),
-                })
-                .min_width(Some(Dimension::Pixels(content_width)))
-                .max_width(Some(Dimension::Pixels(content_width))),
-            );
-        }
-
         for peer in harbor_peer::snapshot() {
             children.push(
                 wrapped_text_element(
@@ -581,32 +347,28 @@ impl crate::TermWindow {
                 );
             }
             if peer.needs_lan_confirm {
+                // The confirmation itself lives in the Pairing menu; the row
+                // only points there so the stalled peer is not a mystery.
                 children.push(
                     wrapped_text_element(
                         &font,
-                        "Use local network",
+                        "Allow the local network from the Pairing menu",
                         max_cols,
                         ElementColors {
                             border: BorderColor::default(),
                             bg: navy.into(),
-                            text: teal.into(),
+                            text: muted.into(),
                         },
                     )
-                    .item_type(UIItemType::HarborConfirmLan(peer.server_id.clone()))
-                    .line_height(Some(1.35))
+                    .line_height(Some(1.2))
                     .padding(BoxDimension {
                         left: Dimension::Pixels(16.),
                         right: Dimension::Pixels(12.),
                         top: Dimension::Pixels(2.),
-                        bottom: Dimension::Pixels(4.),
+                        bottom: Dimension::Pixels(2.),
                     })
                     .min_width(Some(Dimension::Pixels(content_width)))
-                    .max_width(Some(Dimension::Pixels(content_width)))
-                    .hover_colors(Some(ElementColors {
-                        border: BorderColor::default(),
-                        bg: LinearRgba(0.035, 0.09, 0.12, 0.96).into(),
-                        text: teal.into(),
-                    })),
+                    .max_width(Some(Dimension::Pixels(content_width))),
                 );
             }
             for remote in peer.workspaces {
@@ -638,33 +400,6 @@ impl crate::TermWindow {
                     .hover_colors(hover),
                 );
             }
-            children.push(
-                wrapped_text_element(
-                    &font,
-                    "Unpair",
-                    max_cols,
-                    ElementColors {
-                        border: BorderColor::default(),
-                        bg: navy.into(),
-                        text: muted.into(),
-                    },
-                )
-                .item_type(UIItemType::HarborUnpairPeer(peer.server_id.clone()))
-                .line_height(Some(1.3))
-                .padding(BoxDimension {
-                    left: Dimension::Pixels(16.),
-                    right: Dimension::Pixels(12.),
-                    top: Dimension::Pixels(2.),
-                    bottom: Dimension::Pixels(8.),
-                })
-                .min_width(Some(Dimension::Pixels(content_width)))
-                .max_width(Some(Dimension::Pixels(content_width)))
-                .hover_colors(Some(ElementColors {
-                    border: BorderColor::default(),
-                    bg: LinearRgba(0.035, 0.09, 0.12, 0.96).into(),
-                    text: teal.into(),
-                })),
-            );
         }
 
         for (index, row) in harbor_workspace::rows().into_iter().enumerate() {
@@ -846,10 +581,6 @@ impl crate::TermWindow {
             return Ok(());
         }
         harbor_workspace::ensure_current_workspace(self.mux_window_id);
-        // Pairing QR expiry countdown needs a fresh layout each frame.
-        if harbor_mobile::pairing_ui_visible() {
-            self.harbor_sidebar.take();
-        }
         if self.harbor_sidebar.is_none() {
             self.harbor_sidebar = Some(self.build_harbor_sidebar()?);
         }
@@ -922,45 +653,6 @@ impl crate::TermWindow {
         });
         self.assign_overlay(tab.tab_id(), overlay);
         promise::spawn::spawn(future).detach();
-    }
-
-    /// Pair using the clipboard content. The sidebar has no dialog to show, so
-    /// a failure lands in the log and in the peer status line.
-    fn harbor_pair_with_clipboard(
-        context: &dyn window::WindowOps,
-        pair: fn(&str) -> anyhow::Result<()>,
-        what: &'static str,
-    ) {
-        let future = context.get_clipboard(window::Clipboard::Clipboard);
-        promise::spawn::spawn(async move {
-            match future.await {
-                Ok(text) => {
-                    promise::spawn::spawn_into_new_thread(move || {
-                        if let Err(err) = pair(&text) {
-                            log::error!("pairing another Harbor: {err:#}");
-                        }
-                        Ok::<(), anyhow::Error>(())
-                    })
-                    .detach();
-                }
-                Err(err) => log::error!("reading {what} from clipboard: {err:#}"),
-            }
-        })
-        .detach();
-    }
-
-    pub fn harbor_pair_peer_from_clipboard(&mut self, context: &dyn window::WindowOps) {
-        Self::harbor_pair_with_clipboard(context, crate::harbor_peer::pair_from_uri, "pair URI");
-    }
-
-    /// The no-code path: the clipboard holds a Tailscale device id instead of a
-    /// pair URI. A URI is still accepted, so both rows work with either input.
-    pub fn harbor_pair_peer_tailscale_from_clipboard(&mut self, context: &dyn window::WindowOps) {
-        Self::harbor_pair_with_clipboard(
-            context,
-            crate::harbor_peer::pair_from_text,
-            "Tailscale device id",
-        );
     }
 }
 

@@ -21,7 +21,7 @@ The companion app lives in the separate repository
 ┌────────────────────────────┐
 │ wezterm-gui                │
 │  harbor_mobile bridge      │  0.0.0.0:7780, background thread
-│  sidebar Pair mobile + QR  │  PNG opened in image viewer
+│  Pairing menu + QR         │  PNG opened in image viewer
 └─────────────┬──────────────┘
               │ mux access marshalled onto the GUI thread (run_on_main)
               ▼
@@ -34,8 +34,12 @@ binary mux protocol — keep it that way so the app stays simple and portable.
 
 ## Pairing flow
 
-1. Sidebar **Pair mobile** toggles the pairing panel and mints a one-time
-   token (5 minute TTL).
+1. **Pairing ▸ Pair Mobile…** starts the offer and mints a one-time token
+   (5 minute TTL). Choosing it again reuses a still-valid token, so reopening
+   the QR does not invalidate one being scanned; **New Mobile QR Code** always
+   mints a fresh one and **Copy Mobile Pair URI** copies the current one. A
+   notification states how long the offer stays valid; the URI itself goes only
+   to the clipboard, never into the notification.
 2. The pair URI keeps `v=1`, `host`, `port`, `tls`, and `token`, and adds the
    stable server ID, `auth=hmac-sha256-v1`, and typed Tailscale/LAN endpoints.
    It is rendered as a **square PNG with a quiet zone** (see "Why PNG" below),
@@ -216,7 +220,7 @@ API version 1.8.0 adds `POST /v1/pair/local` for same-machine clients (Handy).
 The handler inspects the TCP peer address and accepts only loopback
 (`127.0.0.1` / `::1`). It mints an HMAC device record without a QR offer and
 returns `local_pair_token` once so the client can derive the device key.
-LAN/remote peers still use `/v1/pair` with an active Pair mobile offer.
+LAN/remote peers still use `/v1/pair` with an active Pair Mobile offer.
 
 API version 1.9.0 adds authenticated `POST /v1/workspaces/{id}/g2-view`.
 While the terminal changes, it returns the last 60 rows after removing blank
@@ -350,9 +354,9 @@ then `window.set_window_position(ScreenPoint)` is applied post-creation.
 | `wezterm-gui-subcommands/src/harbor_agent_session.rs` | Per-pane agent session records shared by the hook CLI and the GUI |
 | `wezterm/src/harbor_agent_hooks.rs` | `wezterm agent-session` hook commands and the opt-in hook installer |
 | `wezterm-gui/src/overlay/harbor_remote.rs` | Remote workspace overlay (screen poll, instruction, allowlisted keys) |
-| `wezterm-gui/src/termwindow/harbor_sidebar.rs` | Pairing panel UI (buttons: Open QR / Copy URI / New QR / Pair another Harbor) |
-| `wezterm-gui/src/termwindow/mouseevent.rs` | `UIItemType` handlers; toggle-on also opens QR + copies URI |
-| `wezterm-gui/src/termwindow/mod.rs` | `UIItemType` variants; window centering in `new_window` |
+| `wezterm-gui/src/commands.rs` | **Pairing** menu items (`HarborPairMobile`, `HarborNewMobilePairQr`, `HarborCopyMobilePairUri`, …) |
+| `wezterm-gui/src/termwindow/harbor_pairing.rs` | Pairing menu actions; opens QR + copies URI, notifications |
+| `wezterm-gui/src/termwindow/mod.rs` | Dispatches pairing key assignments; window centering in `new_window` |
 | `wezterm-gui/src/frontend.rs` | `harbor_mobile::ensure_running()` at startup; `first_window()` helper |
 | `wezterm-gui/src/harbor_workspace.rs` | Sidebar widths (default 480 / min 360, legacy 240 migration) |
 | `wezterm-gui/src/termwindow/resize.rs` | `reset_font_and_window_size` = 75% of active screen |

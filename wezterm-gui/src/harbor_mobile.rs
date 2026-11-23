@@ -99,10 +99,7 @@ struct PairOffer {
 #[derive(Clone, Debug)]
 pub struct PairingView {
     pub uri: String,
-    pub host: String,
-    pub port: u16,
     pub expires_in_sec: u64,
-    pub device_count: usize,
 }
 
 struct BridgeInner {
@@ -111,7 +108,9 @@ struct BridgeInner {
     host: String,
     pair_offer: Option<PairOffer>,
     devices: HashMap<String, DeviceRecord>,
-    pairing_ui_visible: bool,
+    /// Set once the user starts mobile pairing from the menu; until then no
+    /// pair offer or QR code exists.
+    pairing_active: bool,
     /// PNG rendered for the current offer: (token, path).
     qr_png: Option<(String, PathBuf)>,
     replay_nonces: VecDeque<(String, String, u64)>,
@@ -151,7 +150,7 @@ lazy_static::lazy_static! {
         host: String::new(),
         pair_offer: None,
         devices: HashMap::new(),
-        pairing_ui_visible: false,
+        pairing_active: false,
         qr_png: None,
         replay_nonces: VecDeque::new(),
     });
@@ -3439,18 +3438,20 @@ fn screen_text(
 }
 
 /// Toggle the pairing QR panel in the sidebar and mint a fresh one-time token.
-pub fn toggle_pairing_ui() -> bool {
+/// Start (or continue) offering mobile pairing and return the current offer.
+/// A still-valid offer is reused unless `fresh` asks for a new token, so
+/// reopening the QR code does not invalidate one the user is about to scan.
+pub fn begin_mobile_pairing(fresh: bool) -> Option<PairingView> {
     ensure_running();
-    let mut inner = INNER.lock();
-    inner.pairing_ui_visible = !inner.pairing_ui_visible;
-    if inner.pairing_ui_visible {
-        refresh_pair_offer_locked(&mut inner);
+    {
+        let mut inner = INNER.lock();
+        let first = !inner.pairing_active;
+        inner.pairing_active = true;
+        if fresh || first {
+            refresh_pair_offer_locked(&mut inner);
+        }
     }
-    inner.pairing_ui_visible
-}
-
-pub fn pairing_ui_visible() -> bool {
-    INNER.lock().pairing_ui_visible
+    pairing_view()
 }
 
 /// Flip the no-code Tailscale pairing policy for desktop peers. The bridge
@@ -3475,12 +3476,6 @@ pub fn tailnet_pairing_enabled() -> bool {
     crate::harbor_settings::allow_tailnet_pairing()
 }
 
-pub fn refresh_pair_offer() {
-    ensure_running();
-    let mut inner = INNER.lock();
-    refresh_pair_offer_locked(&mut inner);
-}
-
 fn refresh_pair_offer_locked(inner: &mut BridgeInner) {
     if inner.host.is_empty() {
         inner.host = guess_lan_ip();
@@ -3493,7 +3488,7 @@ fn refresh_pair_offer_locked(inner: &mut BridgeInner) {
 
 pub fn pairing_view() -> Option<PairingView> {
     let mut inner = INNER.lock();
-    if !inner.pairing_ui_visible {
+    if !inner.pairing_active {
         return None;
     }
     if inner.host.is_empty() {
@@ -3526,16 +3521,8 @@ pub fn pairing_view() -> Option<PairingView> {
 
     Some(PairingView {
         uri,
-        host: inner.host.clone(),
-        port: inner.port,
         expires_in_sec: remaining,
-        device_count: inner.devices.len(),
     })
-}
-
-/// The current pair URI, if a pairing panel is active. Suitable for clipboard.
-pub fn current_pair_uri() -> Option<String> {
-    pairing_view().map(|view| view.uri)
 }
 
 #[cfg(test)]

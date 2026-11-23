@@ -319,6 +319,24 @@ impl CommandDef {
             });
         }
 
+        // Per-peer pairing actions follow the paired Harbors, so they are
+        // generated here; `harbor_peer` rebuilds the menubar when that set
+        // changes.
+        for peer in crate::harbor_peer::snapshot() {
+            let mut actions = vec![];
+            if peer.needs_lan_confirm {
+                actions.push(KeyAssignment::HarborConfirmLanFallback(
+                    peer.server_id.clone(),
+                ));
+            }
+            actions.push(KeyAssignment::HarborUnpairPeer(peer.server_id));
+            for action in actions {
+                if let Some(command) = Self::expand_action(action, config, false) {
+                    result.push(command);
+                }
+            }
+        }
+
         // And sweep to pick up stuff from their key assignments
         let inputmap = InputMap::new(config);
         for ((keycode, mods), entry) in inputmap.keys.default.iter() {
@@ -420,8 +438,14 @@ impl CommandDef {
         commands.retain(|cmd| !cmd.menubar.is_empty());
 
         // Prefer to put the menus in this order
-        let mut order: Vec<&'static str> =
-            vec!["Terminal Harbor", "Shell", "Edit", "View", "Window"];
+        let mut order: Vec<&'static str> = vec![
+            "Terminal Harbor",
+            "Shell",
+            "Edit",
+            "View",
+            "Pairing",
+            "Window",
+        ];
         // Add any other menus on the end
         for cmd in &commands {
             if !order.contains(&cmd.menubar[0]) {
@@ -1627,6 +1651,81 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &["Window"],
             icon: Some("cod_layout_sidebar_left"),
         },
+        HarborPairMobile => CommandDef {
+            brief: "Pair Mobile…".into(),
+            doc: "Opens the mobile pairing QR code and copies its pair URI".into(),
+            keys: vec![],
+            args: &[],
+            menubar: &["Pairing"],
+            icon: Some("md_cellphone_link"),
+        },
+        HarborNewMobilePairQr => CommandDef {
+            brief: "New Mobile QR Code".into(),
+            doc: "Replaces the mobile pairing code with a fresh one and opens it".into(),
+            keys: vec![],
+            args: &[],
+            menubar: &["Pairing"],
+            icon: Some("md_qrcode"),
+        },
+        HarborCopyMobilePairUri => CommandDef {
+            brief: "Copy Mobile Pair URI".into(),
+            doc: "Copies the mobile pair URI for manual entry".into(),
+            keys: vec![],
+            args: &[],
+            menubar: &["Pairing"],
+            icon: Some("md_content_copy"),
+        },
+        HarborPairPeerFromClipboard => CommandDef {
+            brief: "Pair Another Harbor (Pair URI on Clipboard)".into(),
+            doc: "Pairs another Terminal Harbor using the pair URI on the clipboard".into(),
+            keys: vec![],
+            args: &[],
+            menubar: &["Pairing"],
+            icon: Some("md_monitor_share"),
+        },
+        HarborPairPeerTailscaleFromClipboard => CommandDef {
+            brief: "Pair Another Harbor via Tailscale (Device ID on Clipboard)".into(),
+            doc: "Pairs another Terminal Harbor using the Tailscale device id on the clipboard"
+                .into(),
+            keys: vec![],
+            args: &[],
+            menubar: &["Pairing"],
+            icon: Some("md_lan_connect"),
+        },
+        HarborToggleTailnetPair => CommandDef {
+            // The label states the policy this machine serves to peers, and is
+            // refreshed by rebuilding the menubar after each toggle.
+            brief: if crate::harbor_mobile::tailnet_pairing_enabled() {
+                "Tailscale Auto-Pair: On (Click to Turn Off)".into()
+            } else {
+                "Tailscale Auto-Pair: Off (Click to Turn On)".into()
+            },
+            doc: "Allows or refuses no-code pairing from Harbors on the same tailnet".into(),
+            keys: vec![],
+            args: &[],
+            menubar: &["Pairing"],
+            icon: Some("md_lock_open_variant"),
+        },
+        HarborUnpairPeer(server_id) => CommandDef {
+            brief: format!("Unpair {}", crate::harbor_peer::peer_label(server_id)).into(),
+            doc: "Forgets this paired Terminal Harbor".into(),
+            keys: vec![],
+            args: &[],
+            menubar: &["Pairing"],
+            icon: Some("md_link_off"),
+        },
+        HarborConfirmLanFallback(server_id) => CommandDef {
+            brief: format!(
+                "Use Local Network for {}",
+                crate::harbor_peer::peer_label(server_id)
+            )
+            .into(),
+            doc: "Lets this paired Terminal Harbor fall back to the local network".into(),
+            keys: vec![],
+            args: &[],
+            menubar: &["Pairing"],
+            icon: Some("md_lan"),
+        },
         CreateWorkspace => CommandDef {
             brief: "New Workspace".into(),
             doc: "Creates and selects a workspace rooted at the user's home directory".into(),
@@ -2221,6 +2320,13 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         SwitchWorkspaceRelative(-1),
         SwitchWorkspaceRelative(1),
         ToggleWorkspaceSidebar,
+        // ----------------- Pairing
+        HarborPairMobile,
+        HarborNewMobilePairQr,
+        HarborCopyMobilePairUri,
+        HarborPairPeerFromClipboard,
+        HarborPairPeerTailscaleFromClipboard,
+        HarborToggleTailnetPair,
         ActivateLastTab,
         ShowLauncher,
         ShowTabNavigator,

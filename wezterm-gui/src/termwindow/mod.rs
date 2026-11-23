@@ -72,6 +72,7 @@ pub mod background;
 pub mod box_model;
 pub mod charselect;
 pub mod clipboard;
+mod harbor_pairing;
 mod harbor_sidebar;
 pub mod keyevent;
 pub mod modal;
@@ -157,15 +158,6 @@ pub enum UIItemType {
     TabBar(TabBarItem),
     HarborWorkspace(String),
     HarborAddWorkspace,
-    HarborPairMobile,
-    HarborRefreshPair,
-    HarborOpenPairQr,
-    HarborCopyPairUri,
-    HarborPairPeer,
-    HarborPairPeerTailscale,
-    HarborToggleTailnetPair,
-    HarborConfirmLan(String),
-    HarborUnpairPeer(String),
     HarborRemoteWorkspace {
         server_id: String,
         workspace_id: String,
@@ -3148,6 +3140,16 @@ impl TermWindow {
                 if let Some(workspace) = crate::harbor_workspace::workspace_at(*index) {
                     self.harbor_activate_workspace(workspace)?;
                 }
+            }
+            HarborPairMobile
+            | HarborNewMobilePairQr
+            | HarborCopyMobilePairUri
+            | HarborPairPeerFromClipboard
+            | HarborPairPeerTailscaleFromClipboard
+            | HarborToggleTailnetPair
+            | HarborUnpairPeer(_)
+            | HarborConfirmLanFallback(_) => {
+                self.perform_harbor_pairing(assignment);
             }
             ToggleWorkspaceSidebar => {
                 crate::harbor_workspace::toggle_sidebar();
